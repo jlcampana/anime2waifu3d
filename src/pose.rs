@@ -92,7 +92,7 @@ pub const PRESETS: &[&str] = &["reposo", "a-pose", "brazos-arriba", "saludo", "p
 
 pub fn preset(skeleton: &Skeleton, name: &str) -> Option<Vec<Quat>> {
     let mut local = vec![Quat::IDENTITY; skeleton.bones.len()];
-    let mut aim_h = |local: &mut Vec<Quat>, bone: &str, child: &str, dir: Vec3| {
+    let aim_h = |local: &mut Vec<Quat>, bone: &str, child: &str, dir: Vec3| {
         if let (Some(b), Some(c)) = (skeleton.bone(bone), skeleton.bone(child)) {
             aim(skeleton, local, b, c, dir);
         }

@@ -132,7 +132,13 @@ fn hair_layers(model: &Model) -> Vec<bool> {
     hair
 }
 
-pub fn rig(target: &mut Model, base: &Model) -> Result<Report> {
+/// Un objeto marcado a mano: capas (por nombre exacto) que van rígidas con un hueso humanoide.
+pub struct Prop {
+    pub layers: Vec<String>,
+    pub bone: String,
+}
+
+pub fn rig(target: &mut Model, base: &Model, props: &[Prop]) -> Result<Report> {
     let base_skeleton = base.skeleton.as_ref().context("el modelo base no tiene esqueleto")?;
     let hair = hair_layers(target);
     let lower_garment = lower_garment_layers(target);
@@ -294,12 +300,27 @@ pub fn rig(target: &mut Model, base: &Model) -> Result<Report> {
         let before = score(current);
         eprintln!("{bone_name}: {} vértices, {} puntos abiertos, una evaluación {:?}", limb.len(), open.len(), t.elapsed());
         let mut best = (before, current);
-        for (cap, count) in [(75f32, 160usize), (12.0, 50), (4.0, 25)] {
-            let center = best.1;
-            for d in cap_directions(center, cap.to_radians(), count) {
-                let s = score(d);
-                if s < best.0 {
-                    best = (s, d);
+        // Primero toda la esfera (brazo y muslo) o un cono amplio (antebrazo y pierna), para
+        // encontrar también un brazo levantado; después se afina. Los candidatos se evalúan en
+        // paralelo.
+        let wide = if bone_name.contains("Upper") { (180f32, 400usize) } else { (150.0, 240) };
+        for (cap, count) in [wide, (15.0, 60), (4.0, 30)] {
+            let candidates = cap_directions(best.1, cap.to_radians(), count);
+            let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let chunk = candidates.len().div_ceil(threads);
+            let found = std::thread::scope(|scope| {
+                let handles: Vec<_> = candidates
+                    .chunks(chunk)
+                    .map(|part| {
+                        let score = &score;
+                        scope.spawn(move || part.iter().map(|d| (score(*d), *d)).min_by(|a, b| a.0.total_cmp(&b.0)))
+                    })
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok().flatten()).min_by(|a, b| a.0.total_cmp(&b.0))
+            });
+            if let Some(f) = found {
+                if f.0 < best.0 {
+                    best = f;
                 }
             }
         }
@@ -379,6 +400,7 @@ pub fn rig(target: &mut Model, base: &Model) -> Result<Report> {
     let mut global: Vec<Vec<Vec<u32>>> = Vec::new();
     let mut points: Vec<(Vec3, Vec3, bool)> = Vec::new();
     let mut lower: Vec<bool> = Vec::new();
+    let mut layer_of: Vec<usize> = Vec::new();
     for (li, layer) in target.layers.iter().enumerate() {
         let mut per_layer = Vec::new();
         for primitive in &layer.primitives {
@@ -391,6 +413,7 @@ pub fn rig(target: &mut Model, base: &Model) -> Result<Report> {
                         *weld.entry(key).or_insert_with(|| {
                             points.push((Vec3::from(v.position), Vec3::from(v.normal), hair[li]));
                             lower.push(lower_garment[li]);
+                            layer_of.push(li);
                             (points.len() - 1) as u32
                         })
                     })
@@ -597,6 +620,157 @@ pub fn rig(target: &mut Model, base: &Model) -> Result<Report> {
         eprintln!("aristas entre cadenas (torso, bi, bd, pi, pd): {crossing:?}");
     }
 
+    // Geometría extra: vértices lejos de cualquier superficie del cuerpo base (armas, objetos en
+    // la mano, piezas grandes). No se les buscan pesos propios: van rígidos con su ancla, el
+    // vértice del cuerpo más cercano a través de la malla (o en el espacio, si la pieza está
+    // suelta).
+    let extra_limit = (thi.y - tlo.y) * 0.07;
+    let is_extra: Vec<bool> = (0..points.len()).map(|g| !points[g].2 && donors[g].first().is_none_or(|x| x.1 > extra_limit)).collect();
+    let mut is_extra = is_extra;
+    let mut anchor: Vec<u32> = {
+        let mut anchor: Vec<u32> = (0..points.len() as u32).collect();
+        let mut seen: Vec<bool> = is_extra.iter().map(|e| !e).collect();
+        let mut queue: std::collections::VecDeque<usize> = (0..points.len()).filter(|&g| !is_extra[g]).collect();
+        while let Some(v) = queue.pop_front() {
+            for &n in &adjacency[v] {
+                let n = n as usize;
+                if !seen[n] {
+                    seen[n] = true;
+                    anchor[n] = anchor[v];
+                    queue.push_back(n);
+                }
+            }
+        }
+        let body: Vec<usize> = (0..points.len()).filter(|&g| !is_extra[g]).collect();
+        if !body.is_empty() {
+            let grid = Grid::new(body.iter().map(|&g| points[g].0).collect(), cell);
+            for g in 0..points.len() {
+                if !seen[g] {
+                    if let Some(&(i, _)) = grid.knn(points[g].0, 1).first() {
+                        anchor[g] = body[i as usize] as u32;
+                    }
+                }
+            }
+        }
+        anchor
+    };
+    // Objetos: regiones de la segmentación con buena parte lejos del cuerpo (una motosierra, una
+    // espada). Van enteros y rígidos con un solo ancla, la parte del cuerpo que más los toca;
+    // si no, cada trozo seguiría a un hueso distinto y el objeto se estiraría.
+    {
+        let layers = target.layers.len();
+        let mut total = vec![0usize; layers];
+        let mut far = vec![0usize; layers];
+        for g in 0..points.len() {
+            total[layer_of[g]] += 1;
+            if is_extra[g] {
+                far[layer_of[g]] += 1;
+            }
+        }
+        // Nunca piel ni ropa de cintura para abajo (una media lejos del cuerpo base sigue siendo
+        // una media), y solo si más de la mitad está lejos del cuerpo.
+        let prop_layer: Vec<bool> = (0..layers)
+            .map(|l| {
+                !hair[l] && !lower_garment[l] && !target.layers[l].name.to_lowercase().starts_with("piel") && total[l] >= 30 && far[l] * 2 > total[l]
+            })
+            .collect();
+        // Regiones objeto que se tocan forman un mismo objeto.
+        let mut parent: Vec<usize> = (0..layers).collect();
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        for g in 0..points.len() {
+            let a = layer_of[g];
+            for &n in &adjacency[g] {
+                let b = layer_of[n as usize];
+                if a != b && prop_layer[a] && prop_layer[b] {
+                    let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+                    parent[rb] = ra;
+                }
+            }
+        }
+        let group_of: Vec<Option<usize>> = (0..layers).map(|l| prop_layer[l].then(|| find(&mut parent, l))).collect();
+        let is_prop = |g: usize| group_of[layer_of[g]].is_some();
+        // Contactos de cada objeto con el cuerpo (ni objeto ni pelo), por cadena.
+        let mut contacts: HashMap<usize, Vec<usize>> = HashMap::new();
+        for g in 0..points.len() {
+            if let Some(group) = group_of[layer_of[g]] {
+                for &n in &adjacency[g] {
+                    let n = n as usize;
+                    if !is_prop(n) && !points[n].2 && !is_extra[n] {
+                        contacts.entry(group).or_default().push(n);
+                    }
+                }
+            }
+        }
+        let body: Vec<usize> = (0..points.len()).filter(|&g| !is_prop(g) && !points[g].2 && !is_extra[g]).collect();
+        let body_grid = (!body.is_empty()).then(|| Grid::new(body.iter().map(|&g| points[g].0).collect(), cell));
+        let groups: std::collections::HashSet<usize> = group_of.iter().flatten().copied().collect();
+        for group in groups {
+            let members: Vec<usize> = (0..points.len()).filter(|&g| group_of[layer_of[g]] == Some(group)).collect();
+            let mut touching = contacts.remove(&group).unwrap_or_default();
+            if touching.is_empty() {
+                // Pieza suelta: los puntos del cuerpo más cercanos a ella.
+                if let Some(grid) = &body_grid {
+                    for &g in members.iter().step_by((members.len() / 200).max(1)) {
+                        if let Some(&(i, d)) = grid.knn(points[g].0, 1).first() {
+                            if d < extra_limit * 2.0 {
+                                touching.push(body[i as usize]);
+                            }
+                        }
+                    }
+                }
+            }
+            if touching.is_empty() {
+                continue;
+            }
+            // La cadena con más contactos (la mano que lo agarra), y de ella el contacto más
+            // repetido como ancla.
+            let mut by_chain = [0usize; 5];
+            for &t in &touching {
+                by_chain[chain[t] as usize] += 1;
+            }
+            let best = (0..5).max_by_key(|c| by_chain[*c]).unwrap() as u8;
+            let mut count: HashMap<usize, usize> = HashMap::new();
+            for &t in touching.iter().filter(|t| chain[**t] == best) {
+                *count.entry(t).or_default() += 1;
+            }
+            let Some((&a, _)) = count.iter().max_by_key(|x| x.1) else { continue };
+            for &g in &members {
+                is_extra[g] = true;
+                anchor[g] = a as u32;
+            }
+            let name = &target.layers[layer_of[members[0]]].name;
+            eprintln!("objeto ({name}…): {} vértices, rígido con la cadena {best}", members.len());
+        }
+    }
+    for g in 0..points.len() {
+        if is_extra[g] {
+            chain[g] = chain[anchor[g] as usize];
+        }
+    }
+    eprintln!("geometría extra: {} vértices", is_extra.iter().filter(|e| **e).count());
+    // Objetos marcados a mano: rígidos con su hueso.
+    let mut prop_bone: Vec<Option<u16>> = vec![None; points.len()];
+    for prop in props {
+        let bone = skeleton.bone(&prop.bone).with_context(|| format!("el modelo base no tiene el hueso humanoide {}", prop.bone))?;
+        let wanted: Vec<bool> = target.layers.iter().map(|l| prop.layers.iter().any(|n| *n == l.name)).collect();
+        let mut count = 0;
+        for g in 0..points.len() {
+            if wanted[layer_of[g]] {
+                prop_bone[g] = Some(bone as u16);
+                chain[g] = chain_of_bone[bone];
+                count += 1;
+            }
+        }
+        anyhow::ensure!(count > 0, "ninguna capa se llama así: {:?}", prop.layers);
+        eprintln!("objeto marcado: {count} vértices rígidos con {}", prop.bone);
+    }
+
     // La limpieza puede haber pasado algo de ropa larga a un brazo desde sus vecinos: vuelve a
     // su mejor cadena entre torso y piernas.
     for g in 0..points.len() {
@@ -698,6 +872,55 @@ pub fn rig(target: &mut Model, base: &Model) -> Result<Report> {
     };
     let mut cache: HashMap<(u32, u8), ([u16; 4], [f32; 4])> = HashMap::new();
 
+    // Pesos propios de cada vértice (su cadena; la geometría extra, los de su ancla; los objetos
+    // marcados, su hueso), suavizados sobre la malla con los vecinos de la misma cadena: quita
+    // saltos bruscos que dejan escamas en axilas e ingles al mover los brazos.
+    let mut own_weights: Vec<([u16; 4], [f32; 4])> = (0..points.len())
+        .map(|g| match prop_bone[g] {
+            Some(bone) => ([bone, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]),
+            None => {
+                let source = if is_extra[g] { anchor[g] as usize } else { g };
+                weights_for(source, chain[g])
+            }
+        })
+        .collect();
+    let fixed: Vec<bool> = (0..points.len()).map(|g| prop_bone[g].is_some() || is_extra[g] || points[g].2).collect();
+    for _ in 0..4 {
+        own_weights = (0..points.len())
+            .map(|g| {
+                if fixed[g] {
+                    return own_weights[g];
+                }
+                let mut acc: HashMap<u16, f32> = HashMap::new();
+                let mut add = |(j, w): &([u16; 4], [f32; 4]), f: f32| {
+                    for k in 0..4 {
+                        if w[k] > 0.0 {
+                            *acc.entry(j[k]).or_default() += w[k] * f;
+                        }
+                    }
+                };
+                add(&own_weights[g], 2.0);
+                for &n in &adjacency[g] {
+                    let n = n as usize;
+                    if chain[n] == chain[g] && !fixed[n] {
+                        add(&own_weights[n], 1.0);
+                    }
+                }
+                let mut list: Vec<(u16, f32)> = acc.into_iter().collect();
+                list.sort_by(|a, b| b.1.total_cmp(&a.1));
+                list.truncate(4);
+                let total: f32 = list.iter().map(|x| x.1).sum::<f32>().max(1e-12);
+                let mut j = [0u16; 4];
+                let mut w = [0f32; 4];
+                for (k, (b, x)) in list.into_iter().enumerate() {
+                    j[k] = b;
+                    w[k] = x / total;
+                }
+                (j, w)
+            })
+            .collect();
+    }
+
     // 4. Quitar la pose: cada vértice vuelve a la pose de reposo del modelo base. Donde la malla
     // une una extremidad con otra parte lejos de su raíz (la mano fusionada con la cadera), se
     // corta: el vértice se duplica, una copia por cadena, para que al moverse no arrastre la piel.
@@ -729,7 +952,13 @@ pub fn rig(target: &mut Model, base: &Model) -> Result<Report> {
                         if cut {
                             cuts += 1;
                         }
-                        let (j, w) = *cache.entry((g as u32, use_chain)).or_insert_with(|| weights_for(g, use_chain));
+                        // La geometría extra lleva los pesos de su ancla.
+                        let source = if is_extra[g] { anchor[g] as usize } else { g };
+                        let (j, w) = match prop_bone[g] {
+                            Some(bone) => ([bone, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]),
+                            None if !cut => own_weights[g],
+                            None => *cache.entry((source as u32, use_chain)).or_insert_with(|| weights_for(source, use_chain)),
+                        };
                         let v = &primitive.vertices[old as usize];
                         let inv = lbs(&j, &w).inverse();
                         let rest = inv.transform_point3(Vec3::from(v.position));

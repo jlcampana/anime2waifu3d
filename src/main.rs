@@ -363,11 +363,24 @@ fn run_segment(args: &[String]) -> anyhow::Result<()> {
 /// `anime2waifu3d rig OBJETIVO BASE.vrm SALIDA.glb`: pone el esqueleto del modelo base al
 /// objetivo (una malla separada en capas con `segment`) y lo deja en la pose de reposo del base.
 fn run_rig(args: &[String]) -> anyhow::Result<()> {
-    let [target, base, output] = args else { anyhow::bail!("uso: rig OBJETIVO BASE.vrm SALIDA.glb") };
+    // --prop "capa 1,capa 2=rightHand": esas capas son un objeto rígido con ese hueso humanoide.
+    let mut props = Vec::new();
+    let mut files = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--prop" {
+            let value = it.next().ok_or_else(|| anyhow::anyhow!("falta el valor de --prop"))?;
+            let (layers, bone) = value.rsplit_once('=').ok_or_else(|| anyhow::anyhow!("--prop es \"capa,capa=hueso\""))?;
+            props.push(rig::Prop { layers: layers.split(',').map(|s| s.trim().to_string()).collect(), bone: bone.trim().to_string() });
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [target, base, output] = files.as_slice() else { anyhow::bail!("uso: rig OBJETIVO BASE.vrm SALIDA.glb [--prop \"capas=hueso\"]...") };
     let start = std::time::Instant::now();
     let mut model = model::Model::load(std::path::Path::new(target))?;
     let base = model::Model::load(std::path::Path::new(base))?;
-    let report = rig::rig(&mut model, &base)?;
+    let report = rig::rig(&mut model, &base, &props)?;
     println!("escala {:.3}", report.scale);
     for (bone, before, after) in &report.limbs {
         println!("{bone:<15} encaje {:.4} -> {:.4}", before, after);

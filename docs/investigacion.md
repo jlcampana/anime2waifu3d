@@ -261,7 +261,19 @@ Descargadas por el usuario en `assets/candidatas/sketchfab/`:
   - Los ojos, las cejas y la boca quedan dentro de "piel cabeza" (paso 4).
   - Las manos quedan sueltas cuando una muñequera corta el brazo.
   - Muchos accesorios pequeños: habrá que poder fusionar capas a mano en la paleta.
-- Pendiente: paso 3 (rig a partir de Base_Female), paso 4 (cara animable) y **completar las piernas**.
+- **Paso 3, rig: funciona (2026-11-18).** `anime2waifu3d rig CAPAS.glb Base_Female.vrm SALIDA.glb [--prop "capa,capa=hueso"]` (`src/rig.rs`), unos 75 s por modelo con 4 hilos:
+  1. Escala y centra Base_Female sobre el objetivo, **sin la falda del uniforme**: ocupa el sitio de las manos y les daba pesos de pierna.
+  2. Busca la dirección de brazos y piernas, hueso a hueso: primero toda la esfera (encuentra un brazo levantado), después afina, minimizando el chamfer en los dos sentidos. Los puntos de la extremidad que quedan **dentro** del objetivo cuentan triple, para que el brazo no se esconda en el torso.
+  3. **Cadenas** (torso, brazo izquierdo/derecho, pierna izquierda/derecha) por votos de los vecinos del modelo base con normal parecida, limpiadas sobre la malla: filtro de mayoría, el trozo conexo más grande de cada extremidad, y las piezas sueltas por votación de la pieza entera.
+  4. **Ropa de cintura para abajo** (por el nombre de la capa): nunca con huesos de brazo.
+  5. **Geometría extra** (lejos del cuerpo base): rígida con su ancla. Las **regiones objeto** van enteras con la parte del cuerpo que más las toca. Los **objetos marcados a mano** (`--prop`) van rígidos con un hueso humanoide; en la interfaz será un menú de la paleta ("Objeto → mano derecha").
+  6. Pesos por cercanía, solo de huesos de la cadena del vértice (más el torso cerca de la raíz de la extremidad), **suavizados sobre la malla** dentro de cada cadena.
+  7. **Corte de contactos fusionados**: la IA cose la mano a la cadera; esos vértices se duplican, una copia por cadena (de 0 a 900 por modelo).
+  8. Vuelta a la pose en T de Base_Female y exportación con huesos, skin y VRMC_vrm humanoide.
+
+  Resultado con las 6 poses del visor (`--pose`): **turquesa, rubia y ninja se mueven bien**. La motosierra necesita `--prop` para el arma, porque la segmentación clasificó partes del metal como pelo. Quedan escamas pequeñas donde se cortaron contactos.
+  Pendiente del rig: ajustar también la longitud de brazos y piernas; huesos de falda y física para la ropa larga (ahora sigue a cadera y pierna, y en una patada se estira); acelerar más.
+- Pendiente: paso 4 (cara animable) y **completar las piernas** de los modelos cortados.
 
 ### MMD (PMX/VMD): visor de Genshin/HSR/ZZZ y modelos de DeviantArt
 
