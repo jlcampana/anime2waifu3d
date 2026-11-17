@@ -500,25 +500,12 @@ pub fn into_model(model: Model, segments: &[Segment]) -> Model {
             let mut primitives = Vec::new();
             for ((li, pi), triangles) in &segment.faces {
                 let source = &model.layers[*li].primitives[*pi];
-                let mut remap: HashMap<u32, u32> = HashMap::new();
-                let mut vertices = Vec::new();
-                let mut indices = Vec::with_capacity(triangles.len() * 3);
-                for &t in triangles {
-                    for k in 0..3 {
-                        let old = source.indices[t * 3 + k];
-                        let new = *remap.entry(old).or_insert_with(|| {
-                            vertices.push(source.vertices[old as usize]);
-                            (vertices.len() - 1) as u32
-                        });
-                        indices.push(new);
-                    }
-                }
-                primitives.push(Primitive { vertices, indices, material: source.material });
+                primitives.push(source.subset(triangles));
             }
             layers.push(layer(&segment.name, Some(group), 2, primitives));
         }
     }
-    Model { name: model.name, layers, materials: model.materials, textures: model.textures }
+    Model { name: model.name, layers, materials: model.materials, textures: model.textures, skeleton: model.skeleton }
 }
 
 pub fn srgb_to_linear(c: f32) -> f32 {

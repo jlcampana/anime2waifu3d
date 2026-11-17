@@ -1,11 +1,12 @@
 //! Modelo en memoria: capas (una por nodo del glTF), materiales y texturas.
 //!
-//! Por ahora se lee en la pose de reposo: las mallas con skin se dejan tal cual vienen (el
-//! estándar glTF ignora la transformación del nodo en ellas) y el resto se lleva a coordenadas
-//! del mundo.
+//! Todo se lleva a coordenadas del mundo en la pose de reposo. Las mallas con skin se colocan
+//! con sus huesos en reposo (matriz del hueso por su inverse bind matrix), de modo que, para
+//! moverlas, la matriz de cada hueso es `mundo_en_pose * inversa(mundo_en_reposo)`.
 
 use anyhow::{Context, Result};
 use glam::{Mat3, Mat4, Vec3};
+use std::collections::HashMap;
 use std::path::Path;
 
 #[repr(C)]
@@ -20,6 +21,61 @@ pub struct Primitive {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub material: usize,
+    /// Huesos (índices en `Skeleton::bones`) y pesos de cada vértice; vacíos si no hay skin.
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
+}
+
+impl Primitive {
+    /// Una primitiva nueva con solo los triángulos indicados, con los vértices renumerados.
+    pub fn subset(&self, triangles: &[usize]) -> Primitive {
+        let mut remap: HashMap<u32, u32> = HashMap::new();
+        let (mut vertices, mut joints, mut weights) = (Vec::new(), Vec::new(), Vec::new());
+        let mut indices = Vec::with_capacity(triangles.len() * 3);
+        let skinned = !self.joints.is_empty();
+        for &t in triangles {
+            for k in 0..3 {
+                let old = self.indices[t * 3 + k];
+                let new = *remap.entry(old).or_insert_with(|| {
+                    vertices.push(self.vertices[old as usize]);
+                    if skinned {
+                        joints.push(self.joints[old as usize]);
+                        weights.push(self.weights[old as usize]);
+                    }
+                    (vertices.len() - 1) as u32
+                });
+                indices.push(new);
+            }
+        }
+        Primitive { vertices, indices, material: self.material, joints, weights }
+    }
+}
+
+pub struct Bone {
+    pub name: String,
+    pub parent: Option<usize>,
+    /// Matriz del hueso en el mundo, en la pose de reposo.
+    pub rest_world: Mat4,
+}
+
+pub struct Skeleton {
+    pub bones: Vec<Bone>,
+    /// Nombre humanoide VRM (hips, leftUpperArm…) -> hueso.
+    pub humanoid: HashMap<String, usize>,
+}
+
+impl Skeleton {
+    pub fn bone(&self, humanoid: &str) -> Option<usize> {
+        self.humanoid.get(humanoid).copied()
+    }
+
+    pub fn find(&self, name: &str) -> Option<usize> {
+        self.bones.iter().position(|b| b.name == name)
+    }
+
+    pub fn rest_position(&self, bone: usize) -> Vec3 {
+        self.bones[bone].rest_world.w_axis.truncate()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -59,6 +115,7 @@ pub struct Model {
     pub layers: Vec<Layer>,
     pub materials: Vec<Material>,
     pub textures: Vec<Texture>,
+    pub skeleton: Option<Skeleton>,
 }
 
 impl Model {
@@ -103,14 +160,28 @@ impl Model {
         // todos miren igual, como hace three-vrm.
         let vrm0 = document.extensions_used().any(|e| e == "VRM");
         let root = if vrm0 { Mat4::from_rotation_y(std::f32::consts::PI) } else { Mat4::IDENTITY };
+        let mut node_world = vec![Mat4::IDENTITY; document.nodes().len()];
+        let mut node_parent = vec![None; document.nodes().len()];
+        for node in scene.nodes() {
+            walk_nodes(&node, None, Mat4::IDENTITY, &mut node_world, &mut node_parent);
+        }
+        let (skeleton, bone_of_node) = read_skeleton(&document, path, root, &node_world, &node_parent);
+        let context = ReadContext {
+            root,
+            buffers: &buffers,
+            default_material,
+            node_world: &node_world,
+            skeleton: skeleton.as_ref(),
+            bone_of_node: &bone_of_node,
+        };
         let mut layers = Vec::new();
         for node in scene.nodes() {
-            add_node(&node, None, 0, root, root, &buffers, default_material, &mut layers);
+            add_node(&node, None, 0, root, &context, &mut layers);
         }
         anyhow::ensure!(!layers.is_empty(), "el archivo no tiene mallas");
 
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Self { name, layers, materials, textures })
+        Ok(Self { name, layers, materials, textures, skeleton })
     }
 
     /// Visible si la capa y todas sus antecesoras lo son.
@@ -179,28 +250,108 @@ impl Model {
     }
 }
 
+fn walk_nodes(node: &gltf::Node, parent: Option<usize>, parent_world: Mat4, world: &mut [Mat4], parents: &mut [Option<usize>]) {
+    let w = parent_world * Mat4::from_cols_array_2d(&node.transform().matrix());
+    world[node.index()] = w;
+    parents[node.index()] = parent;
+    for child in node.children() {
+        walk_nodes(&child, Some(node.index()), w, world, parents);
+    }
+}
+
+/// El esqueleto: los nodos que son huesos de algún skin, con su padre más cercano que también
+/// lo sea, y los nombres humanoides de VRM 0.x o 1.0 si el archivo los tiene.
+fn read_skeleton(
+    document: &gltf::Document,
+    path: &Path,
+    root: Mat4,
+    node_world: &[Mat4],
+    node_parent: &[Option<usize>],
+) -> (Option<Skeleton>, HashMap<usize, usize>) {
+    let mut bone_of_node: HashMap<usize, usize> = HashMap::new();
+    let mut nodes = Vec::new();
+    for skin in document.skins() {
+        for joint in skin.joints() {
+            if !bone_of_node.contains_key(&joint.index()) {
+                bone_of_node.insert(joint.index(), nodes.len());
+                nodes.push(joint);
+            }
+        }
+    }
+    if nodes.is_empty() {
+        return (None, bone_of_node);
+    }
+    let bones = nodes
+        .iter()
+        .map(|node| {
+            let mut parent = node_parent[node.index()];
+            while let Some(p) = parent {
+                if bone_of_node.contains_key(&p) {
+                    break;
+                }
+                parent = node_parent[p];
+            }
+            Bone {
+                name: node.name().map(str::to_string).unwrap_or_else(|| format!("hueso {}", node.index())),
+                parent: parent.map(|p| bone_of_node[&p]),
+                rest_world: root * node_world[node.index()],
+            }
+        })
+        .collect();
+    let mut humanoid = HashMap::new();
+    if let Some(json) = raw_json(path) {
+        let ext = &json["extensions"];
+        if let Some(list) = ext["VRM"]["humanoid"]["humanBones"].as_array() {
+            for b in list {
+                if let (Some(name), Some(node)) = (b["bone"].as_str(), b["node"].as_u64()) {
+                    if let Some(&bone) = bone_of_node.get(&(node as usize)) {
+                        humanoid.insert(name.to_string(), bone);
+                    }
+                }
+            }
+        }
+        if let Some(map) = ext["VRMC_vrm"]["humanoid"]["humanBones"].as_object() {
+            for (name, b) in map {
+                if let Some(&bone) = b["node"].as_u64().and_then(|n| bone_of_node.get(&(n as usize))) {
+                    humanoid.insert(name.clone(), bone);
+                }
+            }
+        }
+    }
+    (Some(Skeleton { bones, humanoid }), bone_of_node)
+}
+
+/// El JSON del archivo, para leer extensiones que el crate gltf no expone.
+pub fn raw_json(path: &Path) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.starts_with(b"glTF") && bytes.len() > 20 {
+        let len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
+        serde_json::from_slice(bytes.get(20..20 + len)?).ok()
+    } else {
+        serde_json::from_slice(&bytes).ok()
+    }
+}
+
+struct ReadContext<'a> {
+    root: Mat4,
+    buffers: &'a [gltf::buffer::Data],
+    default_material: usize,
+    node_world: &'a [Mat4],
+    skeleton: Option<&'a Skeleton>,
+    bone_of_node: &'a HashMap<usize, usize>,
+}
+
 /// Añade el nodo como capa si él o alguno de sus descendientes tiene malla. Los huesos sueltos
 /// no aparecen en la paleta.
-#[allow(clippy::too_many_arguments)]
-fn add_node(
-    node: &gltf::Node,
-    parent: Option<usize>,
-    depth: usize,
-    parent_world: Mat4,
-    root: Mat4,
-    buffers: &[gltf::buffer::Data],
-    default_material: usize,
-    layers: &mut Vec<Layer>,
-) {
+fn add_node(node: &gltf::Node, parent: Option<usize>, depth: usize, parent_world: Mat4, context: &ReadContext, layers: &mut Vec<Layer>) {
     if !has_mesh(node) {
         return;
     }
     let world = parent_world * Mat4::from_cols_array_2d(&node.transform().matrix());
     let mut primitives = Vec::new();
     if let Some(mesh) = node.mesh() {
-        let transform = if node.skin().is_some() { root } else { world };
         for primitive in mesh.primitives() {
-            if let Some(p) = read_primitive(&primitive, transform, buffers, default_material) {
+            if let Some(p) = read_primitive(&primitive, node, world, context) {
                 primitives.push(p);
             }
         }
@@ -213,7 +364,7 @@ fn add_node(
     let index = layers.len();
     layers.push(Layer { name, parent, depth, primitives, visible: true, opacity: 1.0, expanded: depth < 2 });
     for child in node.children() {
-        add_node(&child, Some(index), depth + 1, world, root, buffers, default_material, layers);
+        add_node(&child, Some(index), depth + 1, world, context, layers);
     }
 }
 
@@ -221,24 +372,66 @@ fn has_mesh(node: &gltf::Node) -> bool {
     node.mesh().is_some() || node.children().any(|c| has_mesh(&c))
 }
 
-fn read_primitive(
-    primitive: &gltf::Primitive,
-    transform: Mat4,
-    buffers: &[gltf::buffer::Data],
-    default_material: usize,
-) -> Option<Primitive> {
+fn read_primitive(primitive: &gltf::Primitive, node: &gltf::Node, world: Mat4, context: &ReadContext) -> Option<Primitive> {
     if primitive.mode() != gltf::mesh::Mode::Triangles {
         return None;
     }
-    let reader = primitive.reader(|b| Some(&buffers[b.index()]));
-    let positions: Vec<Vec3> = reader.read_positions()?.map(|p| transform.transform_point3(p.into())).collect();
+    let reader = primitive.reader(|b| Some(&context.buffers[b.index()]));
+    let raw_positions: Vec<Vec3> = reader.read_positions()?.map(Vec3::from).collect();
     let indices: Vec<u32> = match reader.read_indices() {
         Some(i) => i.into_u32().collect(),
-        None => (0..positions.len() as u32).collect(),
+        None => (0..raw_positions.len() as u32).collect(),
     };
-    let normal_matrix = Mat3::from_mat4(transform).inverse().transpose();
-    let normals: Vec<Vec3> = match reader.read_normals() {
-        Some(n) => n.map(|n| (normal_matrix * Vec3::from(n)).normalize_or_zero()).collect(),
+    let raw_normals: Option<Vec<Vec3>> = reader.read_normals().map(|n| n.map(Vec3::from).collect());
+
+    // Huesos y pesos, con los huesos traducidos a índices del esqueleto. Cada vértice se lleva a
+    // su posición en reposo con las matrices de sus huesos.
+    let skin = node.skin().zip(context.skeleton);
+    let (mut joints, mut weights) = (Vec::new(), Vec::new());
+    let mut vertex_matrix: Vec<Mat4> = Vec::new();
+    if let (Some((skin, skeleton)), Some(j), Some(w)) = (skin, reader.read_joints(0), reader.read_weights(0)) {
+        let joint_nodes: Vec<usize> = skin.joints().map(|n| n.index()).collect();
+        let _ = skeleton;
+        let bone_of = |local: u16| -> u16 {
+            let node = joint_nodes[local as usize];
+            context.bone_of_node.get(&node).copied().unwrap_or(0) as u16
+        };
+        let ibm: Vec<Mat4> = match skin.reader(|b| Some(&context.buffers[b.index()])).read_inverse_bind_matrices() {
+            Some(m) => m.map(|m| Mat4::from_cols_array_2d(&m)).collect(),
+            None => vec![Mat4::IDENTITY; joint_nodes.len()],
+        };
+        let joint_matrix: Vec<Mat4> = joint_nodes.iter().zip(&ibm).map(|(&n, ibm)| context.root * context.node_world[n] * *ibm).collect();
+        for (jv, wv) in j.into_u16().zip(w.into_f32()) {
+            let sum: f32 = wv.iter().sum();
+            let wv = if sum > 0.0 { wv.map(|x| x / sum) } else { [1.0, 0.0, 0.0, 0.0] };
+            let mut m = Mat4::ZERO;
+            for k in 0..4 {
+                m += joint_matrix[jv[k] as usize] * wv[k];
+            }
+            vertex_matrix.push(m);
+            joints.push(jv.map(bone_of));
+            weights.push(wv);
+        }
+    }
+    let skinned = vertex_matrix.len() == raw_positions.len();
+    if !skinned {
+        joints.clear();
+        weights.clear();
+    }
+    let positions: Vec<Vec3> = raw_positions
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| if skinned { vertex_matrix[i].transform_point3(p) } else { world.transform_point3(p) })
+        .collect();
+    let normals: Vec<Vec3> = match raw_normals {
+        Some(n) => n
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let m = if skinned { vertex_matrix[i] } else { world };
+                (Mat3::from_mat4(m).inverse().transpose() * v).normalize_or_zero()
+            })
+            .collect(),
         None => smooth_normals(&positions, &indices),
     };
     let uvs: Vec<[f32; 2]> = match reader.read_tex_coords(0) {
@@ -254,7 +447,9 @@ fn read_primitive(
     Some(Primitive {
         vertices,
         indices,
-        material: primitive.material().index().unwrap_or(default_material),
+        material: primitive.material().index().unwrap_or(context.default_material),
+        joints,
+        weights,
     })
 }
 

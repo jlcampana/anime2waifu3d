@@ -67,6 +67,8 @@ struct MaterialUniform {
 
 struct GpuPrimitive {
     layer: usize,
+    /// Índice de la primitiva dentro de su capa.
+    primitive: usize,
     material: usize,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
@@ -215,7 +217,7 @@ impl SceneRenderer {
             .collect();
         self.primitives.clear();
         for (layer_index, layer) in model.layers.iter().enumerate() {
-            for primitive in &layer.primitives {
+            for (primitive_index, primitive) in layer.primitives.iter().enumerate() {
                 let material = &model.materials[primitive.material];
                 let view = material.texture.and_then(|t| self.textures.get(t)).unwrap_or(&self.white);
                 let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -236,11 +238,12 @@ impl SceneRenderer {
                 let lines = edge_lines(&primitive.indices);
                 self.primitives.push(GpuPrimitive {
                     layer: layer_index,
+                    primitive: primitive_index,
                     material: primitive.material,
                     vertex_buf: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("vertices"),
                         contents: bytemuck::cast_slice(&primitive.vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     }),
                     index_buf: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("indices"),
@@ -257,6 +260,15 @@ impl SceneRenderer {
                     uniform_buf,
                     bind_group,
                 });
+            }
+        }
+    }
+
+    /// Sustituye los vértices de cada primitiva (por ejemplo, los de una pose).
+    pub fn set_vertices(&self, queue: &wgpu::Queue, vertices: &[Vec<Vec<Vertex>>]) {
+        for p in &self.primitives {
+            if let Some(v) = vertices.get(p.layer).and_then(|l| l.get(p.primitive)) {
+                queue.write_buffer(&p.vertex_buf, 0, bytemuck::cast_slice(v));
             }
         }
     }

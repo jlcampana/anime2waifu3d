@@ -22,6 +22,8 @@ pub struct App {
     pub view: ViewSettings,
     pub light: usize,
     pub show_grid: bool,
+    /// Pose predefinida (ver `pose::PRESETS`), si el modelo tiene esqueleto.
+    pub pose: String,
     pub status: String,
 }
 
@@ -46,6 +48,7 @@ impl App {
             view: ViewSettings::default(),
             light: 0,
             show_grid: true,
+            pose: "reposo".into(),
             status: "Arrastra un modelo .glb, .gltf o .vrm a la ventana, o usa Abrir modelo".into(),
         }
     }
@@ -71,9 +74,26 @@ impl App {
             model.triangle_count(),
             model.textures.len()
         );
+        if let Some(skeleton) = &model.skeleton {
+            self.status += &format!(", {} huesos ({} humanoides)", skeleton.bones.len(), skeleton.humanoid.len());
+        }
         self.model = Some(model);
+        self.apply_pose();
         self.frame(Shot::Full);
         Ok(())
+    }
+
+    /// Deforma el modelo con la pose elegida y sube los vértices a la GPU.
+    pub fn apply_pose(&mut self) {
+        let Some(model) = &self.model else { return };
+        let Some(skeleton) = &model.skeleton else { return };
+        match crate::pose::preset(skeleton, &self.pose) {
+            Some(local) => {
+                let vertices = crate::pose::skin_model(model, &local);
+                self.scene.set_vertices(&self.ctx.queue, &vertices);
+            }
+            None => self.status = format!("Pose desconocida: {}", self.pose),
+        }
     }
 
     pub fn frame(&mut self, shot: Shot) {
@@ -209,6 +229,7 @@ pub struct Options {
     pub light: Option<usize>,
     pub camera: Option<Shot>,
     pub hide: Vec<String>,
+    pub pose: Option<String>,
     pub wire_overlay: bool,
     pub no_grid: bool,
 }
@@ -242,6 +263,7 @@ impl Options {
                     options.camera = Some(*Shot::ALL.get(index).ok_or_else(|| anyhow::anyhow!("no hay cámara {index}"))?);
                 }
                 "--hide" => options.hide.push(value()?.to_lowercase()),
+                "--pose" => options.pose = Some(value()?),
                 "--wire-overlay" => options.wire_overlay = true,
                 "--no-grid" => options.no_grid = true,
                 _ if !arg.starts_with("--") && options.model.is_none() => options.model = Some(arg.into()),
@@ -260,6 +282,10 @@ impl Options {
         }
         if let Some(light) = self.light {
             app.light = light.min(PRESETS.len() - 1);
+        }
+        if let Some(pose) = &self.pose {
+            app.pose = pose.clone();
+            app.apply_pose();
         }
         app.view.wire_overlay = self.wire_overlay;
         app.show_grid = !self.no_grid;

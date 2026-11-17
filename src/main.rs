@@ -2,7 +2,9 @@ mod app;
 mod export_glb;
 mod lighting;
 mod model;
+mod pose;
 mod renderer;
+mod rig;
 mod segment;
 
 use app::{App, Options};
@@ -231,6 +233,19 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
     for (i, preset) in lighting::PRESETS.iter().enumerate() {
         ui.radio_value(&mut app.light, i, preset.name);
     }
+    if app.model.as_ref().is_some_and(|m| m.skeleton.is_some()) {
+        ui.separator();
+        ui.heading("Pose");
+        let before = app.pose.clone();
+        egui::ComboBox::from_id_salt("pose").selected_text(app.pose.as_str()).show_ui(ui, |ui| {
+            for name in pose::PRESETS {
+                ui.selectable_value(&mut app.pose, name.to_string(), *name);
+            }
+        });
+        if app.pose != before {
+            app.apply_pose();
+        }
+    }
     ui.separator();
     ui.heading("Cámara");
     for shot in Shot::ALL {
@@ -345,9 +360,33 @@ fn run_segment(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `anime2waifu3d rig OBJETIVO BASE.vrm SALIDA.glb`: pone el esqueleto del modelo base al
+/// objetivo (una malla separada en capas con `segment`) y lo deja en la pose de reposo del base.
+fn run_rig(args: &[String]) -> anyhow::Result<()> {
+    let [target, base, output] = args else { anyhow::bail!("uso: rig OBJETIVO BASE.vrm SALIDA.glb") };
+    let start = std::time::Instant::now();
+    let mut model = model::Model::load(std::path::Path::new(target))?;
+    let base = model::Model::load(std::path::Path::new(base))?;
+    let report = rig::rig(&mut model, &base)?;
+    println!("escala {:.3}", report.scale);
+    for (bone, before, after) in &report.limbs {
+        println!("{bone:<15} encaje {:.4} -> {:.4}", before, after);
+    }
+    export_glb::write(&model, std::path::Path::new(output))?;
+    println!("-> {output} en {:.1} s", start.elapsed().as_secs_f32());
+    Ok(())
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("rig") {
+        if let Err(error) = run_rig(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().map(String::as_str) == Some("segment") {
         if let Err(error) = run_segment(&args[1..]) {
             eprintln!("{error:#}");
@@ -361,7 +400,7 @@ fn main() {
             eprintln!("{error:#}");
             eprintln!(
                 "Uso: anime2waifu3d [modelo.glb|.gltf|.vrm] [--shot salida.png] [--size 1024x1024] \
-                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--wire-overlay] [--no-grid]"
+                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--wire-overlay] [--no-grid]"
             );
             std::process::exit(2);
         }

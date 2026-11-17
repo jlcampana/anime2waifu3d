@@ -263,6 +263,18 @@ Descargadas por el usuario en `assets/candidatas/sketchfab/`:
   - Muchos accesorios pequeños: habrá que poder fusionar capas a mano en la paleta.
 - Pendiente: paso 3 (rig a partir de Base_Female), paso 4 (cara animable) y **completar las piernas**.
 
+### MMD (PMX/VMD): visor de Genshin/HSR/ZZZ y modelos de DeviantArt
+
+- **[phoshco/model-viewer](https://github.com/phoshco/model-viewer)** (código MIT, TypeScript): visor web de los modelos **MMD oficiales** que HoYoverse publica (Genshin, Honkai Star Rail, ZZZ, Wuthering Waves…), con **Babylon.js + [babylon-mmd](https://github.com/noname0310/babylon-mmd)**. Carga PMX y motions VMD/BVMD con física. Los modelos se descargan de fuera del repo; en el repo hay unos 9 PMX.
+  Lo que nos aporta:
+  - **Referencia visual** de render toon de calidad: sombreado celular, contornos, sombras de cara.
+  - **PMX es el formato anime de facto** y trae justo lo que buscamos: huesos estándar MMD, *morphs* de cara (parpadeo, guiño, vocales あいうえお, expresiones), **física de pelo, falda y pecho** con cuerpos rígidos y *joints* (Bullet), y orden de dibujo por material (capas translúcidas).
+  - **babylon-mmd** (MIT) es una implementación de referencia de física MMD, IK y *morphs*.
+  - Las **motions VMD** (bailes, gestos) son una posible fuente de animaciones de prueba; el mapeo de huesos MMD → humanoide VRM es conocido.
+  - **Propuesta**: añadir **importación de PMX (+ VMD)** a la app. Daría modelos de prueba con rig, cara y física de verdad, y animaciones para probar el sistema.
+  - Licencias: los modelos oficiales de HoYoverse tienen sus propios términos (uso no comercial de fans, con condiciones en el readme de cada modelo). **Solo en local, como referencia**; nunca se incluyen en la app.
+- **[DeviantArt oz-sys: MMD Snowbreak y más](https://www.deviantart.com/oz-sys/gallery/93514823/mmd---snowbreak---models)**: modelos MMD de Snowbreak, Wuthering Waves, ZZZ, Honkai Star Rail, Genshin, Tower of Fantasy… Algunos con descarga ("+ DL"). No indica licencia ni de dónde salen (seguramente extraídos de los juegos). **Mismo trato que DOA: solo pruebas en local**, nunca en el repo ni en la app.
+
 ## 9. Siguiente paso propuesto
 
 1. Decidir el proveedor de la generación pesada (sección 5).

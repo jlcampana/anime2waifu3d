@@ -1,5 +1,6 @@
 //! Escribe un `Model` como GLB: un nodo por capa, con la jerarquía de la paleta, los materiales
-//! y las texturas (en PNG). Por ahora sin rig ni animaciones.
+//! y las texturas (en PNG). Si el modelo tiene esqueleto, se escriben sus huesos, el skin y la
+//! extensión VRMC_vrm con los nombres humanoides (VRM 1.0 mira hacia +Z, como el modelo).
 
 use crate::model::{AlphaMode, Model};
 use anyhow::Result;
@@ -62,6 +63,39 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
 
     let mut meshes = Vec::new();
     let mut nodes: Vec<Value> = Vec::new();
+    // Los huesos van primero: el nodo de cada hueso tiene su mismo índice.
+    let bone_count = model.skeleton.as_ref().map_or(0, |s| s.bones.len());
+    let mut skin_index = None;
+    if let Some(skeleton) = &model.skeleton {
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); bone_count];
+        for (i, bone) in skeleton.bones.iter().enumerate() {
+            let local = match bone.parent {
+                Some(p) => skeleton.bones[p].rest_world.inverse() * bone.rest_world,
+                None => bone.rest_world,
+            };
+            let (scale, rotation, translation) = local.to_scale_rotation_translation();
+            let mut node = json!({ "name": bone.name, "translation": translation.to_array() });
+            if !rotation.abs_diff_eq(glam::Quat::IDENTITY, 1e-6) {
+                node["rotation"] = json!(rotation.to_array());
+            }
+            if !scale.abs_diff_eq(glam::Vec3::ONE, 1e-6) {
+                node["scale"] = json!(scale.to_array());
+            }
+            nodes.push(node);
+            if let Some(p) = bone.parent {
+                children[p].push(i);
+            }
+        }
+        for (i, list) in children.into_iter().enumerate() {
+            if !list.is_empty() {
+                nodes[i]["children"] = json!(list);
+            }
+        }
+        let ibm: Vec<f32> = skeleton.bones.iter().flat_map(|b| b.rest_world.inverse().to_cols_array()).collect();
+        let view = push_view(&mut bin, bytemuck::cast_slice(&ibm), None);
+        accessors.push(json!({ "bufferView": view, "componentType": 5126, "count": bone_count, "type": "MAT4" }));
+        skin_index = Some(json!({ "inverseBindMatrices": accessors.len() - 1, "joints": (0..bone_count).collect::<Vec<_>>() }));
+    }
     for layer in &model.layers {
         let mut node = json!({ "name": layer.name });
         if !layer.primitives.is_empty() {
@@ -90,28 +124,42 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
                 let idx_view = push_view(&mut bin, bytemuck::cast_slice(&p.indices), Some(34963));
                 accessors.push(json!({ "bufferView": idx_view, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR" }));
                 let idx = accessors.len() - 1;
-                primitives.push(json!({
-                    "attributes": { "POSITION": pos, "NORMAL": nor, "TEXCOORD_0": uv },
-                    "indices": idx,
-                    "material": p.material,
-                }));
+                let mut attributes = json!({ "POSITION": pos, "NORMAL": nor, "TEXCOORD_0": uv });
+                if !p.joints.is_empty() {
+                    let view = push_view(&mut bin, bytemuck::cast_slice(&p.joints), Some(34962));
+                    accessors.push(json!({ "bufferView": view, "componentType": 5123, "count": count, "type": "VEC4" }));
+                    attributes["JOINTS_0"] = json!(accessors.len() - 1);
+                    let view = push_view(&mut bin, bytemuck::cast_slice(&p.weights), Some(34962));
+                    accessors.push(json!({ "bufferView": view, "componentType": 5126, "count": count, "type": "VEC4" }));
+                    attributes["WEIGHTS_0"] = json!(accessors.len() - 1);
+                }
+                primitives.push(json!({ "attributes": attributes, "indices": idx, "material": p.material }));
             }
             meshes.push(json!({ "name": layer.name, "primitives": primitives }));
             node["mesh"] = json!(meshes.len() - 1);
+            if skin_index.is_some() && layer.primitives.iter().any(|p| !p.joints.is_empty()) {
+                node["skin"] = json!(0);
+            }
         }
         nodes.push(node);
     }
-    // Jerarquía: los hijos de cada capa, y las capas sin padre como raíces de la escena.
-    let mut roots = Vec::new();
+    // Jerarquía: los hijos de cada capa, y las capas sin padre (y los huesos raíz) como raíces.
+    let mut roots: Vec<usize> = model
+        .skeleton
+        .iter()
+        .flat_map(|s| s.bones.iter().enumerate().filter(|(_, b)| b.parent.is_none()).map(|(i, _)| i))
+        .collect();
     for (i, layer) in model.layers.iter().enumerate() {
+        let node = bone_count + i;
         match layer.parent {
             Some(parent) => {
+                let parent = bone_count + parent;
                 let children = nodes[parent].get("children").cloned().unwrap_or(json!([]));
                 let mut children: Vec<Value> = children.as_array().cloned().unwrap_or_default();
-                children.push(json!(i));
+                children.push(json!(node));
                 nodes[parent]["children"] = json!(children);
             }
-            None => roots.push(i),
+            None => roots.push(node),
         }
     }
     while bin.len() % 4 != 0 {
@@ -129,6 +177,19 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
         "bufferViews": views,
         "buffers": [{ "byteLength": bin.len() }],
     });
+    if let (Some(skin), Some(skeleton)) = (skin_index, &model.skeleton) {
+        document["skins"] = json!([skin]);
+        let mut human = serde_json::Map::new();
+        for (name, &bone) in &skeleton.humanoid {
+            human.insert(name.clone(), json!({ "node": bone }));
+        }
+        document["extensionsUsed"] = json!(["VRMC_vrm"]);
+        document["extensions"] = json!({ "VRMC_vrm": {
+            "specVersion": "1.0",
+            "meta": { "name": model.name, "authors": ["anime2waifu3d"], "licenseUrl": "https://vrm.dev/licenses/1.0/" },
+            "humanoid": { "humanBones": human },
+        }});
+    }
     if !images.is_empty() {
         document["images"] = json!(images);
         document["textures"] = json!(textures);
