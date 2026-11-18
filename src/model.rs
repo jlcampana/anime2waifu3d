@@ -33,6 +33,8 @@ pub struct Primitive {
 pub struct Morph {
     pub name: String,
     pub deltas: Vec<[f32; 3]>,
+    /// Desplazamiento de las UV (vacío si la forma no las mueve): cambia de dibujo en un atlas.
+    pub uv_deltas: Vec<[f32; 2]>,
 }
 
 impl Primitive {
@@ -61,7 +63,11 @@ impl Primitive {
         let morphs = self
             .morphs
             .iter()
-            .map(|m| Morph { name: m.name.clone(), deltas: kept.iter().map(|&i| m.deltas[i as usize]).collect() })
+            .map(|m| Morph {
+                name: m.name.clone(),
+                deltas: kept.iter().map(|&i| m.deltas[i as usize]).collect(),
+                uv_deltas: if m.uv_deltas.is_empty() { Vec::new() } else { kept.iter().map(|&i| m.uv_deltas[i as usize]).collect() },
+            })
             .collect();
         Primitive { vertices, indices, material: self.material, joints, weights, morphs }
     }
@@ -190,6 +196,7 @@ impl Model {
             walk_nodes(&node, None, Mat4::IDENTITY, &mut node_world, &mut node_parent);
         }
         let (skeleton, bone_of_node) = read_skeleton(&document, path, root, &node_world, &node_parent);
+        let raw = raw_json(path);
         let context = ReadContext {
             root,
             buffers: &buffers,
@@ -197,6 +204,8 @@ impl Model {
             node_world: &node_world,
             skeleton: skeleton.as_ref(),
             bone_of_node: &bone_of_node,
+            raw: raw.as_ref(),
+            document: &document,
         };
         let mut layers = Vec::new();
         for node in scene.nodes() {
@@ -409,6 +418,9 @@ struct ReadContext<'a> {
     node_world: &'a [Mat4],
     skeleton: Option<&'a Skeleton>,
     bone_of_node: &'a HashMap<usize, usize>,
+    /// El JSON del archivo y el documento, para lo que el crate gltf no lee (UV de las formas).
+    raw: Option<&'a serde_json::Value>,
+    document: &'a gltf::Document,
 }
 
 /// Añade el nodo como capa si él o alguno de sus descendientes tiene malla. Los huesos sueltos
@@ -533,7 +545,18 @@ fn read_primitive(primitive: &gltf::Primitive, node: &gltf::Node, world: Mat4, c
                     m.transform_vector3(Vec3::from(d)).to_array()
                 })
                 .collect::<Vec<_>>();
-            (deltas.len() == vertices_len).then(|| Morph { name: names.get(t).cloned().unwrap_or_else(|| format!("forma {t}")), deltas })
+            // UV de la forma (`TEXCOORD_0` en el target), leídas del JSON.
+            let uv_deltas: Vec<[f32; 2]> = node
+                .mesh()
+                .and_then(|mesh| {
+                    let index = context.raw?.get("meshes")?.get(mesh.index())?.get("primitives")?.get(primitive.index())?.get("targets")?.get(t)?.get("TEXCOORD_0")?.as_u64()?;
+                    let accessor = context.document.accessors().nth(index as usize)?;
+                    let iter = gltf::accessor::Iter::<[f32; 2]>::new(accessor, |b: gltf::Buffer| context.buffers.get(b.index()).map(|d| &d[..]))?;
+                    Some(iter.collect())
+                })
+                .filter(|uv: &Vec<[f32; 2]>| uv.len() == vertices_len)
+                .unwrap_or_default();
+            (deltas.len() == vertices_len).then(|| Morph { name: names.get(t).cloned().unwrap_or_else(|| format!("forma {t}")), deltas, uv_deltas })
         })
         .collect();
     Some(Primitive {

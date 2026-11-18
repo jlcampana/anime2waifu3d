@@ -103,6 +103,7 @@ pub fn write_with(model: &Model, path: &Path, project: Option<&Value>) -> Result
     }
     // Formas de cada capa, para las expresiones VRM: nombre -> (nodo, índice).
     let mut expression_binds: Vec<(String, usize, usize)> = Vec::new();
+    let mut texture_binds: Vec<(String, usize, [f32; 2])> = Vec::new();
     for layer in &model.layers {
         let mut node = json!({ "name": layer.name });
         // Las primitivas de una malla glTF comparten las formas: solo si todas tienen las mismas.
@@ -159,7 +160,13 @@ pub fn write_with(model: &Model, path: &Path, project: Option<&Value>) -> Result
                             }
                             let view = push_view(&mut bin, bytemuck::cast_slice(&m.deltas), Some(34962));
                             accessors.push(json!({ "bufferView": view, "componentType": 5126, "count": count, "type": "VEC3", "min": min, "max": max }));
-                            json!({ "POSITION": accessors.len() - 1 })
+                            let mut target = json!({ "POSITION": accessors.len() - 1 });
+                            if !m.uv_deltas.is_empty() {
+                                let view = push_view(&mut bin, bytemuck::cast_slice(&m.uv_deltas), Some(34962));
+                                accessors.push(json!({ "bufferView": view, "componentType": 5126, "count": count, "type": "VEC2" }));
+                                target["TEXCOORD_0"] = json!(accessors.len() - 1);
+                            }
+                            target
                         })
                         .collect();
                     primitive["targets"] = json!(targets);
@@ -171,7 +178,22 @@ pub fn write_with(model: &Model, path: &Path, project: Option<&Value>) -> Result
                 mesh["weights"] = json!(vec![0.0; morph_names.len()]);
                 mesh["extras"] = json!({ "targetNames": morph_names });
                 for (i, name) in morph_names.iter().enumerate() {
-                    expression_binds.push((name.clone(), nodes.len(), i));
+                    // Las formas que solo mueven UV (cambiar de dibujo en un atlas) van en VRM
+                    // como transformación de textura de su material, que es lo que entienden
+                    // los visores VRM.
+                    let uv_only = layer.primitives.iter().all(|p| {
+                        let m = &p.morphs[i];
+                        !m.uv_deltas.is_empty() && m.deltas.iter().all(|d| d.iter().all(|c| c.abs() < 1e-7))
+                    });
+                    if uv_only {
+                        for p in &layer.primitives {
+                            if let Some(offset) = p.morphs[i].uv_deltas.first() {
+                                texture_binds.push((name.clone(), p.material, *offset));
+                            }
+                        }
+                    } else {
+                        expression_binds.push((name.clone(), nodes.len(), i));
+                    }
                 }
             }
             meshes.push(mesh);
@@ -229,19 +251,38 @@ pub fn write_with(model: &Model, path: &Path, project: Option<&Value>) -> Result
             "humanoid": { "humanBones": human },
         }});
         // Expresiones VRM: las formas con nombre de una expresión predefinida.
-        let mut presets = serde_json::Map::new();
-        for name in ["blink", "blinkLeft", "blinkRight", "happy", "angry", "sad", "relaxed", "surprised", "aa", "ih", "ou", "ee", "oh"] {
+        // Las de nombre predefinido van en `preset`; las demás (sonrisa, gatito…), en `custom`.
+        const PRESETS: [&str; 13] = ["blink", "blinkLeft", "blinkRight", "happy", "angry", "sad", "relaxed", "surprised", "aa", "ih", "ou", "ee", "oh"];
+        let mut names: Vec<&String> = expression_binds.iter().map(|(n, _, _)| n).chain(texture_binds.iter().map(|(n, _, _)| n)).collect();
+        names.sort();
+        names.dedup();
+        let (mut presets, mut custom) = (serde_json::Map::new(), serde_json::Map::new());
+        for name in names {
             let binds: Vec<Value> = expression_binds
                 .iter()
                 .filter(|(n, _, _)| n == name)
                 .map(|(_, node, index)| json!({ "node": node, "index": index, "weight": 1.0 }))
                 .collect();
+            let textures: Vec<Value> = texture_binds
+                .iter()
+                .filter(|(n, _, _)| n == name)
+                .map(|(_, material, offset)| json!({ "material": material, "scale": [1.0, 1.0], "offset": offset }))
+                .collect();
+            let mut expression = json!({ "isBinary": !textures.is_empty() });
             if !binds.is_empty() {
-                presets.insert(name.to_string(), json!({ "morphTargetBinds": binds, "isBinary": false }));
+                expression["morphTargetBinds"] = json!(binds);
+            }
+            if !textures.is_empty() {
+                expression["textureTransformBinds"] = json!(textures);
+            }
+            if PRESETS.contains(&name.as_str()) {
+                presets.insert(name.clone(), expression);
+            } else {
+                custom.insert(name.clone(), expression);
             }
         }
-        if !presets.is_empty() {
-            document["extensions"]["VRMC_vrm"]["expressions"] = json!({ "preset": presets });
+        if !presets.is_empty() || !custom.is_empty() {
+            document["extensions"]["VRMC_vrm"]["expressions"] = json!({ "preset": presets, "custom": custom });
         }
         if let Some(hair) = crate::hair::HairSim::new(model) {
             document["extensionsUsed"] = json!(["VRMC_vrm", "VRMC_springBone"]);

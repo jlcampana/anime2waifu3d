@@ -55,6 +55,11 @@ impl Raster {
         Some(((t.x * GRID as f32) as usize, (t.y * GRID as f32) as usize))
     }
 
+    /// El punto llevado dentro de la rejilla.
+    fn clamp(&self, p: Vec2) -> Vec2 {
+        p.clamp(self.low, self.high - (self.high - self.low) * 1e-4)
+    }
+
     fn point_of(&self, x: usize, y: usize) -> Vec2 {
         self.low + (self.high - self.low) * Vec2::new((x as f32 + 0.5) / GRID as f32, (y as f32 + 0.5) / GRID as f32)
     }
@@ -439,20 +444,48 @@ fn find_mouth(raster: &Raster, eyes: &[Eye], skin: [f32; 3]) -> (Vec2, f32, bool
     let skin_lab = lab(skin);
     let (low, high) = mouth_window(eyes);
     let cell = (raster.high.y - raster.low.y) / GRID as f32;
+    // Filas de labios rojizos y filas de rayas oscuras: mandan los labios si los hay.
     let mut rows: std::collections::HashMap<i32, Vec<f32>> = std::collections::HashMap::new();
-    if let (Some((x0, y0)), Some((x1, y1))) = (raster.cell_of(low), raster.cell_of(high)) {
+    let mut dark_rows: std::collections::HashMap<i32, Vec<f32>> = std::collections::HashMap::new();
+    if let (Some((x0, y0)), Some((x1, y1))) = (raster.cell_of(raster.clamp(low)), raster.cell_of(raster.clamp(high))) {
         for y in y0..=y1 {
             for x in x0..=x1 {
                 let Some(c) = raster.get(x, y) else { continue };
                 let l = lab(c.color);
                 let reddish = l.y - skin_lab.y > 10.0 && l.y > l.z.abs() * 0.5;
-                let dark = l.x < skin_lab.x - 30.0 && (l.y * l.y + l.z * l.z).sqrt() < 30.0;
-                if reddish || dark {
-                    let p = raster.point_of(x, y);
-                    rows.entry(((p.y - low.y) / cell) as i32).or_default().push(p.x);
+                // Oscuro y de poco color (no un collar azul).
+                let dark = l.x < skin_lab.x - 25.0 && (l.y * l.y + l.z * l.z).sqrt() < 35.0;
+                let p = raster.point_of(x, y);
+                let row = ((p.y - low.y) / cell) as i32;
+                if reddish {
+                    rows.entry(row).or_default().push(p.x);
+                } else if dark {
+                    dark_rows.entry(row).or_default().push(p.x);
                 }
             }
         }
+    }
+    if std::env::var("A2W_DEBUG_FACE").is_ok() {
+        // Los colores más alejados de la piel en la ventana, para ajustar los criterios.
+        let mut seen: Vec<(f32, Vec3)> = Vec::new();
+        if let (Some((x0, y0)), Some((x1, y1))) = (raster.cell_of(raster.clamp(low)), raster.cell_of(raster.clamp(high))) {
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    if let Some(c) = raster.get(x, y) {
+                        let l = lab(c.color);
+                        seen.push((l.distance(skin_lab), l));
+                    }
+                }
+            }
+        }
+        seen.sort_by(|a, b| b.0.total_cmp(&a.0));
+        eprintln!("piel {skin_lab:?}");
+        for (d, l) in seen.iter().step_by(4).take(12) {
+            eprintln!("  ΔE {d:.0} Lab ({:.0}, {:.0}, {:.0})", l.x, l.y, l.z);
+        }
+    }
+    if !rows.values().any(|xs| xs.len() >= 3) {
+        rows = dark_rows;
     }
     match rows.iter().filter(|(_, xs)| xs.len() >= 3).max_by_key(|(_, xs)| xs.len()) {
         Some((row, xs)) => {
@@ -471,6 +504,199 @@ fn mouth_window(eyes: &[Eye]) -> (Vec2, Vec2) {
     let eye_y = (eyes[0].centre.y + eyes[1].centre.y) * 0.5;
     let mid_x = (eyes[0].centre.x + eyes[1].centre.x) * 0.5;
     (Vec2::new(mid_x - 0.3 * spacing, eye_y - 1.05 * spacing), Vec2::new(mid_x + 0.3 * spacing, eye_y - 0.4 * spacing))
+}
+
+/// Dibujos de boca del atlas, en orden: el primero es la boca original.
+pub const MOUTH_DRAWINGS: [&str; 4] = ["original", "sonrisa", "gatito", "puchero"];
+
+/// Boca por textura: una calcomanía pegada a la cara sobre la boca pintada, con un atlas de
+/// dibujos. El primero es la boca original copiada tal cual (no se nota la calcomanía); en los
+/// demás, la boca se borra rellenando con la piel de alrededor y se dibuja otra encima:
+/// sonrisa cerrada (‿), boca de gatito (ω) y puchero (︵). Cada forma `sonrisa`, `gatito` y
+/// `puchero` solo mueve las UV a su dibujo.
+#[allow(clippy::too_many_arguments)]
+fn add_mouth_drawings(model: &mut Model, face: &Raster, head: usize, size: f32, lift: f32, skin: [f32; 3], centre: Vec2, width: f32) -> Result<()> {
+    const W: usize = 192;
+    const H: usize = 96;
+    let half = Vec2::new(0.75 * width, 0.375 * width);
+    let low = centre - Vec2::new(half.x, half.y * 1.1);
+    let high = centre + Vec2::new(half.x, half.y * 0.9);
+    // Proyección fina de la zona de la boca (las capas de párpados y boca están plegadas: no
+    // tienen área y no salen).
+    let fine = rasterize(model, head, low, high, size);
+    let skin_lab = lab(skin);
+    let pixel_point = |x: usize, y: usize| {
+        Vec2::new(low.x + (x as f32 + 0.5) / W as f32 * (high.x - low.x), high.y - (y as f32 + 0.5) / H as f32 * (high.y - low.y))
+    };
+    let mut original = vec![skin; W * H];
+    for y in 0..H {
+        for x in 0..W {
+            if let Some(c) = fine.cell_of(pixel_point(x, y)).and_then(|(cx, cy)| fine.get(cx, cy)) {
+                original[y * W + x] = c.color;
+            }
+        }
+    }
+    // Lo que es boca: lejos del color de piel, dentro de una elipse alrededor del centro.
+    let (cx, cy) = (W as f32 * 0.5, H as f32 * 0.55);
+    let inside = |x: usize, y: usize| {
+        let dx = (x as f32 - cx) / (W as f32 * 0.4);
+        let dy = (y as f32 - cy) / (H as f32 * 0.42);
+        dx * dx + dy * dy < 1.0
+    };
+    let mut mark = vec![false; W * H];
+    let mut line = [0.35f32, 0.12, 0.12];
+    let mut darkest = f32::MAX;
+    for y in 0..H {
+        for x in 0..W {
+            let c = original[y * W + x];
+            let l = lab(c);
+            if inside(x, y) && l.distance(skin_lab) > 18.0 {
+                mark[y * W + x] = true;
+                if l.x < darkest {
+                    darkest = l.x;
+                    line = c;
+                }
+            }
+        }
+    }
+    // La línea nueva, un poco menos oscura que lo más oscuro de la boca pintada.
+    line = line.map(|v| v * 0.85 + 0.08);
+    // Sin boca: la piel de alrededor se extiende hacia dentro.
+    let mut clean = original.clone();
+    let mut known: Vec<bool> = mark.iter().map(|m| !m).collect();
+    for _ in 0..W {
+        let mut changed = false;
+        let previous = clean.clone();
+        let was_known = known.clone();
+        for y in 0..H {
+            for x in 0..W {
+                if was_known[y * W + x] {
+                    continue;
+                }
+                let mut sum = [0.0f32; 3];
+                let mut n = 0.0;
+                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx >= 0 && ny >= 0 && (nx as usize) < W && (ny as usize) < H && was_known[ny as usize * W + nx as usize] {
+                        let c = previous[ny as usize * W + nx as usize];
+                        for k in 0..3 {
+                            sum[k] += c[k];
+                        }
+                        n += 1.0;
+                    }
+                }
+                if n > 0.0 {
+                    clean[y * W + x] = sum.map(|v| v / n);
+                    known[y * W + x] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // Trazos: curvas por puntos, con borde suavizado.
+    let thickness = (W as f32 * 0.018).max(1.2);
+    let draw = |image: &mut Vec<[f32; 3]>, curve: &dyn Fn(f32) -> (f32, f32)| {
+        for k in 0..=400 {
+            let t = k as f32 / 400.0 * 2.0 - 1.0;
+            let (px, py) = curve(t);
+            let r = thickness;
+            for y in (py - r - 1.0).max(0.0) as usize..=((py + r + 1.0) as usize).min(H - 1) {
+                for x in (px - r - 1.0).max(0.0) as usize..=((px + r + 1.0) as usize).min(W - 1) {
+                    let d = ((x as f32 + 0.5 - px).powi(2) + (y as f32 + 0.5 - py).powi(2)).sqrt();
+                    let alpha = (r + 0.5 - d).clamp(0.0, 1.0);
+                    if alpha > 0.0 {
+                        let c = &mut image[y * W + x];
+                        for i in 0..3 {
+                            c[i] = c[i] * (1.0 - alpha) + line[i] * alpha;
+                        }
+                    }
+                }
+            }
+        }
+    };
+    // Medidas en píxeles: media boca, la mitad del ancho detectado.
+    let hw = W as f32 / 3.0;
+    let mut smile = clean.clone();
+    draw(&mut smile, &|t| (cx + t * 0.75 * hw, cy - 0.12 * hw + 0.22 * hw * (1.0 - t * t)));
+    let mut cat = clean.clone();
+    for side in [-1.0f32, 1.0] {
+        draw(&mut cat, &|t| (cx + side * 0.26 * hw + t * 0.26 * hw, cy - 0.06 * hw + 0.2 * hw * (1.0 - t * t)));
+    }
+    let mut pout = clean.clone();
+    draw(&mut pout, &|t| (cx + t * 0.32 * hw, cy + 0.08 * hw - 0.14 * hw * (1.0 - t * t)));
+
+    // Atlas: los cuatro dibujos en fila.
+    let sprites = [&original, &smile, &cat, &pout];
+    let mut rgba = vec![0u8; sprites.len() * W * H * 4];
+    for (s, sprite) in sprites.iter().enumerate() {
+        for y in 0..H {
+            for x in 0..W {
+                let c = sprite[y * W + x];
+                let i = (y * W * sprites.len() + s * W + x) * 4;
+                for k in 0..3 {
+                    rgba[i + k] = (c[k].clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+                // Borde fundido: la calcomanía no deja marco aunque la luz cambie un poco.
+                let edge = |p: usize, n: usize| (p.min(n - 1 - p) as f32 / (n as f32 * 0.15)).min(1.0);
+                rgba[i + 3] = (edge(x, W).min(edge(y, H)) * 255.0).round() as u8;
+            }
+        }
+    }
+    let texture = model.textures.len();
+    model.textures.push(crate::model::Texture { width: (sprites.len() * W) as u32, height: H as u32, rgba });
+    let material = model.materials.len();
+    model.materials.push(Material { name: "boca dibujada".into(), base_color: [1.0; 4], texture: Some(texture), alpha: AlphaMode::Blend, double_sided: true });
+
+    // La calcomanía: una rejilla pegada a la cara, por delante de la cara y por detrás del
+    // interior de la boca abierta.
+    const COLUMNS: usize = 16;
+    const ROWS: usize = 8;
+    let decal_lift = lift * 1.2;
+    let mut primitive = Primitive { vertices: Vec::new(), indices: Vec::new(), material, joints: Vec::new(), weights: Vec::new(), morphs: Vec::new() };
+    let step = (high.x - low.x) / COLUMNS as f32;
+    for row in 0..=ROWS {
+        for col in 0..=COLUMNS {
+            let (u, v) = (col as f32 / COLUMNS as f32, row as f32 / ROWS as f32);
+            let p = Vec2::new(low.x + u * (high.x - low.x), high.y - v * (high.y - low.y));
+            let z = face.depth_at(p).unwrap_or(0.0) + decal_lift;
+            let dz = |d: Vec2| face.depth_at(p + d).unwrap_or(z) - face.depth_at(p - d).unwrap_or(z);
+            let normal = Vec3::new(-dz(Vec2::new(step, 0.0)) / (2.0 * step), -dz(Vec2::new(0.0, step)) / (2.0 * step), 1.0).normalize();
+            primitive.vertices.push(Vertex { position: [p.x, p.y, z], normal: normal.to_array(), uv: [u / sprites.len() as f32, v] });
+            primitive.joints.push([head as u16, 0, 0, 0]);
+            primitive.weights.push([1.0, 0.0, 0.0, 0.0]);
+        }
+    }
+    let stride = (COLUMNS + 1) as u32;
+    for row in 0..ROWS as u32 {
+        for col in 0..COLUMNS as u32 {
+            let a = row * stride + col;
+            let (b, c) = (a + 1, a + stride);
+            primitive.indices.extend_from_slice(&[a, c, b, b, c, c + 1]);
+        }
+    }
+    let count = primitive.vertices.len();
+    primitive.morphs = MOUTH_DRAWINGS[1..]
+        .iter()
+        .enumerate()
+        .map(|(k, name)| Morph {
+            name: name.to_string(),
+            deltas: vec![[0.0; 3]; count],
+            uv_deltas: vec![[(k + 1) as f32 / sprites.len() as f32, 0.0]; count],
+        })
+        .collect();
+    model.layers.push(Layer {
+        name: "boca dibujada".into(),
+        parent: None,
+        depth: 0,
+        primitives: vec![primitive],
+        visible: true,
+        opacity: 1.0,
+        expanded: false,
+    });
+    Ok(())
 }
 
 /// Imagen de la cara proyectada con los ojos encontrados, para comprobar a ojo.
@@ -667,7 +893,7 @@ pub fn rig_face(model: &mut Model) -> Result<Report> {
         }
     }
     for (prim, morphs) in [(&mut skin_prim, skin_morphs), (&mut lash_prim, lash_morphs)] {
-        prim.morphs = morph_names.iter().zip(morphs).map(|(n, deltas)| Morph { name: n.to_string(), deltas }).collect();
+        prim.morphs = morph_names.iter().zip(morphs).map(|(n, deltas)| Morph { name: n.to_string(), deltas, uv_deltas: Vec::new() }).collect();
     }
     model.layers.push(Layer {
         name: "párpados".into(),
@@ -711,7 +937,7 @@ pub fn rig_face(model: &mut Model) -> Result<Report> {
         let next = if k == RING as u32 { 1 } else { k + 1 };
         mouth.indices.extend_from_slice(&[0, k, next]);
     }
-    mouth.morphs = shapes.iter().zip(deltas).map(|((n, _, _), d)| Morph { name: n.to_string(), deltas: d }).collect();
+    mouth.morphs = shapes.iter().zip(deltas).map(|((n, _, _), d)| Morph { name: n.to_string(), deltas: d, uv_deltas: Vec::new() }).collect();
     model.layers.push(Layer {
         name: "boca".into(),
         parent: None,
@@ -721,5 +947,19 @@ pub fn rig_face(model: &mut Model) -> Result<Report> {
         opacity: 1.0,
         expanded: false,
     });
+    add_mouth_drawings(model, &raster, head as usize, size, lift, skin, centre, width)?;
+
+    // Los huesos de los ojos, a los ojos encontrados (un poco por detrás de la superficie, en
+    // el centro del globo): así funciona la mirada (`lookAt`) de VRM.
+    if let Some(skeleton) = model.skeleton.as_mut() {
+        let left = if eyes[0].centre.x > eyes[1].centre.x { 0 } else { 1 };
+        for (name, e) in [("leftEye", left), ("rightEye", 1 - left)] {
+            if let Some(b) = skeleton.bone(name) {
+                let eye = &eyes[e];
+                let z = raster.depth_at(eye.centre).unwrap_or(0.0) - eye.radius.x * 1.5;
+                skeleton.bones[b].rest_world.w_axis = glam::Vec4::new(eye.centre.x, eye.centre.y, z, 1.0);
+            }
+        }
+    }
     Ok(Report { eyes, mouth: (centre, width, found) })
 }

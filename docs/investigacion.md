@@ -212,8 +212,16 @@ Decisión del usuario: geometría de párpados, no cambiar la textura. Implement
   - Bien en la morena y la de pelo turquesa. En la rubia, la boca es una raya mínima y se usa la posición supuesta.
 - **Expresiones del visor.** "feliz" combina ojos ^^ con `aa` a 0.45; "sorpresa" usa `oh`; "hablar" va pasando por las vocales cada 0.14 s.
 
+- **Boca por textura** (2026-11-18; el usuario eligió cambiar la textura). Capa "boca dibujada": una calcomanía pegada a la cara sobre la boca, con un atlas de cuatro dibujos.
+  - "original": la boca pintada copiada tal cual, de una proyección fina de esa zona, así que no se nota. Los bordes se funden con transparencia.
+  - "sonrisa" (‿), "gatito" (ω) y "puchero" (︵): la boca se borra rellenando con la piel de alrededor y se dibuja otra encima, del color de la boca original.
+  - Cada forma solo mueve las UV a su dibujo (morph target con `TEXCOORD_0`). En VRM va como `textureTransformBinds` del material, en expresiones `custom` binarias.
+  - La boca se busca primero por labios rojizos y, si no los hay, por una raya oscura de poco color (así no confunde un collar azul con la boca).
+  - Visor: "sonrisa", "contenta" (ojos ^^ y sonrisa), "gatito" y "puchero".
+- **Ojos para la mirada.** Los huesos `leftEye`/`rightEye` se mueven a los ojos encontrados, al centro del globo, para el `lookAt` de VRM.
+- **Validado con el VRM Add-on for Blender 4.10.5,** instalado con permiso del usuario en la carpeta aislada de Blender: spec 1.0, humanoide completo, expresiones `preset` (blink, happy, vocales) y `custom` con su transformación de textura, y `VRMC_springBone` (17 colisionadores, 20 cadenas).
+
 Pendiente:
-- Sonrisa sin abrir la boca: la boca pintada no se puede curvar sin cambiar la textura.
 - Lengua y dientes.
 - Cejas.
 - Caras de perfil o giradas.

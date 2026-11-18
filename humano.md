@@ -37,7 +37,8 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - `falda_patada.png`;
   - `falda_viento.png`;
   - `expresiones.png`;
-  - `hablar.gif`.
+  - `hablar.gif`;
+  - `bocas.png`.
 - [ ] Prueba a guardar un proyecto (Ctrl+S), cerrarlo y volver a abrirlo. También a exportar con "Exportar…" y abrir el resultado en Blender.
 - [ ] Dime lo que veas mal o raro, con el modelo, la pose o la animación, y la zona. Si puedes, añade una captura.
 
@@ -48,9 +49,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - [x] **Cara animable:** elegiste geometría de párpados. Hecho: parpadeo, guiño, ojos felices (^^) y boca con vocales.
   - [x] **Formato de proyecto:** hecho. "Guardar proyecto…" (Ctrl+S) y "Exportar…" a GLB, VRM, GLB solo modelo, OBJ y FBX.
   - [ ] **Ruta desde imagen:** imagen de anime → modelo, con quitar el fondo y ajustar Base_Female a la silueta. Pendiente: dime cuándo.
-- [ ] **VRM Add-on de Blender.** Para comprobar que la física del pelo exportada (`VRMC_springBone`) funciona fuera de la app hace falta instalar el add-on oficial "VRM Add-on for Blender", que es gratuito. Tienes dos opciones:
-  - darme permiso para descargarlo e instalarlo en la carpeta aislada de Blender, sin tocar tu configuración;
-  - instalarlo tú en tu Blender e importar un `.glb` de `assets/resultados/`.
+- [x] **VRM Add-on de Blender.** Me diste permiso. Está instalado en la carpeta aislada (versión 4.10.5) y el VRM exportado se ha validado con él. Si quieres verlo tú, instálalo en tu Blender desde Edit > Preferences > Get Extensions (busca "VRM").
 - [ ] **Unir la rama a `main`.** Todo está en la rama `visor-y-segmentacion` (GitHub `jlcampana/anime2waifu3d`). ¿Abro un PR y lo unes cuando lo hayas probado?
 - [ ] **El modelo de la motosierra:**
   - necesita marcar la motosierra a mano (`--prop`), porque la segmentación confunde el metal con pelo;
@@ -58,7 +57,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - una pieza rígida de su pierna derecha recibe física de falda.
 
   ¿Lo dejamos así hasta tener la paleta completa, donde se marcará con un clic, o es prioritario?
-- [ ] **Sonreír sin abrir la boca.** La boca pintada no se puede curvar con geometría. Para una sonrisa cerrada habría que cambiar la textura de la boca. ¿Te interesa?
+- [x] **Sonreír sin abrir la boca:** elegiste cambiar la textura. Hecho: sonrisa ‿, gatito ω y puchero ︵. Pruébalas en "Cara" y dime si quieres otras bocas.
 
 ## 3. Material que necesito
 

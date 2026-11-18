@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::path::Path;
 
 /// Expresiones de la cara en el visor.
-pub const EXPRESSIONS: &[&str] = &["neutral", "parpadeo", "guiño izq", "guiño der", "feliz", "sorpresa", "hablar"];
+pub const EXPRESSIONS: &[&str] = &["neutral", "parpadeo", "guiño izq", "guiño der", "feliz", "sonrisa", "contenta", "gatito", "puchero", "sorpresa", "hablar"];
 
 pub struct App {
     pub ctx: RenderContext,
@@ -287,6 +287,11 @@ impl App {
             "guiño der" => vec![("blinkRight", 1.0)],
             "feliz" => vec![("happy", 1.0), ("aa", 0.45)],
             "sorpresa" => vec![("oh", 1.0)],
+            // Bocas dibujadas en la textura.
+            "sonrisa" => vec![("sonrisa", 1.0)],
+            "contenta" => vec![("happy", 1.0), ("sonrisa", 1.0)],
+            "gatito" => vec![("gatito", 1.0)],
+            "puchero" => vec![("puchero", 1.0)],
             "hablar" => {
                 // Vocales seguidas, de 0.14 s cada una, con un hueco cerrado de vez en cuando.
                 const VOWELS: [&str; 7] = ["aa", "ee", "oh", "", "ih", "ou", "aa"];

@@ -44,20 +44,30 @@ pub type MorphWeights<'a> = &'a [(&'a str, f32)];
 
 pub fn skin_primitive(primitive: &Primitive, skin: &[Mat4], morphs: MorphWeights) -> Vec<Vertex> {
     // Formas activas de esta primitiva.
-    let active: Vec<(&[[f32; 3]], f32)> = primitive
+    let active: Vec<(&crate::model::Morph, f32)> = primitive
         .morphs
         .iter()
-        .filter_map(|m| morphs.iter().find(|(n, w)| *n == m.name && *w != 0.0).map(|(_, w)| (m.deltas.as_slice(), *w)))
+        .filter_map(|m| morphs.iter().find(|(n, w)| *n == m.name && *w != 0.0).map(|(_, w)| (m, *w)))
         .collect();
+    let uv = |i: usize, v: &Vertex| {
+        let mut uv = v.uv;
+        for (m, w) in &active {
+            if let Some(d) = m.uv_deltas.get(i) {
+                uv[0] += d[0] * *w;
+                uv[1] += d[1] * *w;
+            }
+        }
+        uv
+    };
     let rest = |i: usize, v: &Vertex| {
         let mut p = Vec3::from(v.position);
-        for (deltas, w) in &active {
-            p += Vec3::from(deltas[i]) * *w;
+        for (m, w) in &active {
+            p += Vec3::from(m.deltas[i]) * *w;
         }
         p
     };
     if primitive.joints.is_empty() {
-        return primitive.vertices.iter().enumerate().map(|(i, v)| Vertex { position: rest(i, v).to_array(), ..*v }).collect();
+        return primitive.vertices.iter().enumerate().map(|(i, v)| Vertex { position: rest(i, v).to_array(), uv: uv(i, v), ..*v }).collect();
     }
     primitive
         .vertices
@@ -73,7 +83,7 @@ pub fn skin_primitive(primitive: &Primitive, skin: &[Mat4], morphs: MorphWeights
             }
             let p = m.transform_point3(rest(i, v));
             let n = (Mat3::from_mat4(m) * Vec3::from(v.normal)).normalize_or_zero();
-            Vertex { position: p.to_array(), normal: n.to_array(), uv: v.uv }
+            Vertex { position: p.to_array(), normal: n.to_array(), uv: uv(i, v) }
         })
         .collect()
 }
