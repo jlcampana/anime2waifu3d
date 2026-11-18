@@ -480,6 +480,8 @@ fn print_face(report: anyhow::Result<face::Report>) {
             for eye in &r.eyes {
                 println!("ojo en ({:.3}, {:.3}), {:.3} x {:.3}", eye.centre.x, eye.centre.y, eye.radius.x * 2.0, eye.radius.y * 2.0);
             }
+            let (centre, width, found) = r.mouth;
+            println!("boca en ({:.3}, {:.3}), {:.3} de ancho{}", centre.x, centre.y, width, if found { "" } else { " (supuesta)" });
         }
         Err(error) => println!("sin párpados: {error:#}"),
     }

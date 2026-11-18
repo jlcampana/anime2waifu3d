@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::path::Path;
 
 /// Expresiones de la cara en el visor.
-pub const EXPRESSIONS: &[&str] = &["neutral", "parpadeo", "guiño izq", "guiño der", "feliz"];
+pub const EXPRESSIONS: &[&str] = &["neutral", "parpadeo", "guiño izq", "guiño der", "feliz", "sorpresa", "hablar"];
 
 pub struct App {
     pub ctx: RenderContext,
@@ -145,10 +145,20 @@ impl App {
             "parpadeo" => vec![("blink", 1.0)],
             "guiño izq" => vec![("blinkLeft", 1.0)],
             "guiño der" => vec![("blinkRight", 1.0)],
-            "feliz" => vec![("happy", 1.0)],
+            "feliz" => vec![("happy", 1.0), ("aa", 0.45)],
+            "sorpresa" => vec![("oh", 1.0)],
+            "hablar" => {
+                // Vocales seguidas, de 0.14 s cada una, con un hueco cerrado de vez en cuando.
+                const VOWELS: [&str; 7] = ["aa", "ee", "oh", "", "ih", "ou", "aa"];
+                let phase = self.sim_time / 0.14;
+                let vowel = VOWELS[phase as usize % VOWELS.len()];
+                let open = (phase.fract() * std::f32::consts::PI).sin();
+                if vowel.is_empty() { Vec::new() } else { vec![(vowel, 0.9 * open)] }
+            }
             _ => Vec::new(),
         };
-        if self.auto_blink && weights.is_empty() {
+        let eyes_busy = weights.iter().any(|(n, _)| n.starts_with("blink") || *n == "happy");
+        if self.auto_blink && !eyes_busy {
             // Un parpadeo de 0.18 s cada 3.7 s.
             let t = self.sim_time % 3.7;
             if t < 0.18 {
@@ -249,7 +259,7 @@ impl App {
     pub fn tick(&mut self, dt: f32) {
         let animated = self.animation != "ninguna";
         let hair_active = self.hair_physics && self.hair.is_some();
-        let blinking = self.auto_blink && self.expression == "neutral" && self.has_face();
+        let blinking = (self.auto_blink || self.expression == "hablar") && self.has_face();
         if !animated && !hair_active && !blinking && self.springs.iter().all(|s| s.x.abs() < 1e-4) {
             return;
         }

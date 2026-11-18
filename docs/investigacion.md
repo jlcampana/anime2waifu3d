@@ -205,8 +205,16 @@ Decisión del usuario: geometría de párpados, no cambiar la textura. Implement
   - Bien en la rubia, la de pelo turquesa y la morena.
   - La de la motosierra tiene la cabeza girada: no se encuentran dos ojos y se queda sin párpados, con un aviso.
 
+- **Boca** (capa "boca").
+  - Se busca la línea de marcas rojizas (labios) u oscuras más poblada en una ventana bajo los ojos, entre ellos. Si no la hay, va donde suele estar, a 0.7 veces la separación de los ojos por debajo de ellos.
+  - Encima va un interior de boca de geometría: un abanico elíptico pegado a la cara, plegado en la línea de los labios.
+  - Las vocales VRM `aa`, `ih`, `ou`, `ee` y `oh` lo abren con distintos anchos y altos, sobre todo hacia abajo, como la mandíbula.
+  - Bien en la morena y la de pelo turquesa. En la rubia, la boca es una raya mínima y se usa la posición supuesta.
+- **Expresiones del visor.** "feliz" combina ojos ^^ con `aa` a 0.45; "sorpresa" usa `oh`; "hablar" va pasando por las vocales cada 0.14 s.
+
 Pendiente:
-- Boca (abrir y sonreír) para las expresiones y para hablar (`aa`, `ih`, `ou`, `ee`, `oh`).
+- Sonrisa sin abrir la boca: la boca pintada no se puede curvar sin cambiar la textura.
+- Lengua y dientes.
 - Cejas.
 - Caras de perfil o giradas.
 - Un ojo solo.

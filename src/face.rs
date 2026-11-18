@@ -36,6 +36,8 @@ pub struct Eye {
 
 pub struct Report {
     pub eyes: Vec<Eye>,
+    /// Centro y ancho de la boca, si se encontró pintada (si no, se pone donde suele estar).
+    pub mouth: (Vec2, f32, bool),
 }
 
 /// La cara de frente: celdas de `low` a `high` en x e y.
@@ -429,14 +431,57 @@ fn find_eyes(model: &Model) -> Result<(Vec<Eye>, Raster, f32, [f32; 3])> {
     Ok((found, raster, size, skin_rgb))
 }
 
+/// Boca: centro, ancho y si se encontró pintada. Es la línea de marcas rojizas (labios) u
+/// oscuras más poblada debajo de los ojos, centrada entre ellos; si no hay, donde suele estar.
+fn find_mouth(raster: &Raster, eyes: &[Eye], skin: [f32; 3]) -> (Vec2, f32, bool) {
+    let spacing = (eyes[0].centre.x - eyes[1].centre.x).abs();
+    let eye_y = (eyes[0].centre.y + eyes[1].centre.y) * 0.5;
+    let mid_x = (eyes[0].centre.x + eyes[1].centre.x) * 0.5;
+    let skin_lab = lab(skin);
+    let (low, high) = mouth_window(eyes);
+    let cell = (raster.high.y - raster.low.y) / GRID as f32;
+    let mut rows: std::collections::HashMap<i32, Vec<f32>> = std::collections::HashMap::new();
+    if let (Some((x0, y0)), Some((x1, y1))) = (raster.cell_of(low), raster.cell_of(high)) {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let Some(c) = raster.get(x, y) else { continue };
+                let l = lab(c.color);
+                let reddish = l.y - skin_lab.y > 10.0 && l.y > l.z.abs() * 0.5;
+                let dark = l.x < skin_lab.x - 30.0 && (l.y * l.y + l.z * l.z).sqrt() < 30.0;
+                if reddish || dark {
+                    let p = raster.point_of(x, y);
+                    rows.entry(((p.y - low.y) / cell) as i32).or_default().push(p.x);
+                }
+            }
+        }
+    }
+    match rows.iter().filter(|(_, xs)| xs.len() >= 3).max_by_key(|(_, xs)| xs.len()) {
+        Some((row, xs)) => {
+            let left = xs.iter().copied().fold(f32::MAX, f32::min);
+            let right = xs.iter().copied().fold(f32::MIN, f32::max);
+            let y = low.y + (*row as f32 + 0.5) * cell;
+            (Vec2::new((left + right) * 0.5, y), (right - left).clamp(0.2 * spacing, 0.6 * spacing), true)
+        }
+        None => (Vec2::new(mid_x, eye_y - 0.7 * spacing), 0.3 * spacing, false),
+    }
+}
+
+/// Dónde se busca la boca: debajo de los ojos, entre ellos.
+fn mouth_window(eyes: &[Eye]) -> (Vec2, Vec2) {
+    let spacing = (eyes[0].centre.x - eyes[1].centre.x).abs();
+    let eye_y = (eyes[0].centre.y + eyes[1].centre.y) * 0.5;
+    let mid_x = (eyes[0].centre.x + eyes[1].centre.x) * 0.5;
+    (Vec2::new(mid_x - 0.3 * spacing, eye_y - 1.05 * spacing), Vec2::new(mid_x + 0.3 * spacing, eye_y - 0.4 * spacing))
+}
+
 /// Imagen de la cara proyectada con los ojos encontrados, para comprobar a ojo.
 pub fn debug_image(model: &Model, path: &std::path::Path) -> Result<()> {
     let (raster, _, _) = face_raster(model)?;
-    let eyes = match find_eyes(model) {
-        Ok((eyes, ..)) => eyes,
+    let (eyes, skin) = match find_eyes(model) {
+        Ok((eyes, _, _, skin)) => (eyes, skin),
         Err(error) => {
             eprintln!("{error:#}");
-            Vec::new()
+            (Vec::new(), [0.9, 0.75, 0.65])
         }
     };
     let mut image = image::RgbImage::new(GRID as u32, GRID as u32);
@@ -444,6 +489,24 @@ pub fn debug_image(model: &Model, path: &std::path::Path) -> Result<()> {
         for x in 0..GRID {
             let c = raster.get(x, y).map_or([40, 40, 60], |c| c.color.map(|v| (v * 255.0) as u8));
             image.put_pixel(x as u32, (GRID - 1 - y) as u32, image::Rgb(c));
+        }
+    }
+    if eyes.len() == 2 {
+        // La ventana de la boca en azul y la boca encontrada en rojo.
+        let (low, high) = mouth_window(&eyes);
+        let (centre, width, _) = find_mouth(&raster, &eyes, skin);
+        let mut plot = |p: Vec2, c: [u8; 3]| {
+            if let Some((x, y)) = raster.cell_of(p) {
+                image.put_pixel(x as u32, (GRID - 1 - y) as u32, image::Rgb(c));
+            }
+        };
+        for k in 0..100 {
+            let t = k as f32 / 100.0;
+            plot(Vec2::new(low.x + (high.x - low.x) * t, low.y), [0, 0, 255]);
+            plot(Vec2::new(low.x + (high.x - low.x) * t, high.y), [0, 0, 255]);
+            plot(Vec2::new(low.x, low.y + (high.y - low.y) * t), [0, 0, 255]);
+            plot(Vec2::new(high.x, low.y + (high.y - low.y) * t), [0, 0, 255]);
+            plot(Vec2::new(centre.x - width * 0.5 + width * t, centre.y), [255, 0, 0]);
         }
     }
     for e in &eyes {
@@ -616,5 +679,48 @@ pub fn rig_face(model: &mut Model) -> Result<Report> {
         opacity: 1.0,
         expanded: false,
     });
-    Ok(Report { eyes })
+
+    let (centre, width, found) = find_mouth(&raster, &eyes, skin);
+    let mouth_material = model.materials.len();
+    model.materials.push(material("boca", [0.42, 0.12, 0.14]));
+    // Interior de la boca: un abanico elíptico pegado a la cara, plegado en la línea de los
+    // labios cuando está cerrada; cada vocal lo abre con otra forma (ancho, alto).
+    const RING: usize = 20;
+    let shapes: [(&str, f32, f32); 5] = [("aa", 0.5, 0.55), ("ih", 0.5, 0.22), ("ou", 0.25, 0.32), ("ee", 0.55, 0.16), ("oh", 0.35, 0.52)];
+    let mouth_lift = lift * 1.5;
+    let surface = |p: Vec2| -> Vec3 { Vec3::new(p.x, p.y, raster.depth_at(p).unwrap_or(0.0) + mouth_lift) };
+    let mut mouth = Primitive { vertices: Vec::new(), indices: Vec::new(), material: mouth_material, joints: Vec::new(), weights: Vec::new(), morphs: Vec::new() };
+    let mut deltas: Vec<Vec<[f32; 3]>> = vec![Vec::new(); shapes.len()];
+    for k in 0..=RING {
+        // El 0 es el centro; del 1 al RING, el contorno.
+        let angle = (k as f32 - 1.0) / RING as f32 * std::f32::consts::TAU;
+        let ring = Vec2::new(angle.cos(), angle.sin());
+        let closed = if k == 0 { centre } else { centre + Vec2::new(ring.x * width * 0.5, 0.0) };
+        let open = surface(closed);
+        mouth.vertices.push(Vertex { position: open.to_array(), normal: [0.0, 0.0, 1.0], uv: [0.0, 0.0] });
+        mouth.joints.push([head, 0, 0, 0]);
+        mouth.weights.push([1.0, 0.0, 0.0, 0.0]);
+        for (d, (_, w, h)) in deltas.iter_mut().zip(shapes) {
+            // La boca se abre sobre todo hacia abajo, como la mandíbula.
+            let shape = if k == 0 { centre - Vec2::new(0.0, h * width * 0.3) } else {
+                centre + Vec2::new(ring.x * w * width, (ring.y - 0.6) * h * width * 0.5)
+            };
+            d.push((surface(shape) - open).to_array());
+        }
+    }
+    for k in 1..=RING as u32 {
+        let next = if k == RING as u32 { 1 } else { k + 1 };
+        mouth.indices.extend_from_slice(&[0, k, next]);
+    }
+    mouth.morphs = shapes.iter().zip(deltas).map(|((n, _, _), d)| Morph { name: n.to_string(), deltas: d }).collect();
+    model.layers.push(Layer {
+        name: "boca".into(),
+        parent: None,
+        depth: 0,
+        primitives: vec![mouth],
+        visible: true,
+        opacity: 1.0,
+        expanded: false,
+    });
+    Ok(Report { eyes, mouth: (centre, width, found) })
 }
