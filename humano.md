@@ -73,7 +73,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 
 - [ ] Los modelos SupaVoxel de Sketchfab son CC-BY: si alguno se distribuye o se usa en material público, hay que dar crédito al autor. De momento solo están en `assets/`, que no se sube a git.
 - [ ] Los modelos de DOA, los ripeados de DeviantArt, Mai Shiranui y los MMD de HoYoverse son **solo para pruebas locales**: nunca se suben ni se incluyen en la app. Confírmalo si tu idea es distinta.
-- [ ] Base_Female y HairSample_Female de VRoid son CC0 (según sus metadatos VRM). Conviene que lo confirmes en la página oficial de VRoid antes de distribuir algo que los incluya.
+- [x] Base_Female y HairSample_Female de VRoid son CC0 (según sus metadatos VRM). Conviene que lo confirmes en la página oficial de VRoid antes de distribuir algo que los incluya.
 
 ## 5. Al final del proyecto
 

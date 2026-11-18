@@ -312,6 +312,30 @@ Implementado en `src/analyze.rs`, con el subcomando `anime2waifu3d analizar IMAG
   - Brazos y piernas por separado.
   - Ojos y boca en 2D.
 
+## 6h. Ruta desde imagen, paso 3: cuerpo ajustado y textura proyectada (2026-11-18)
+
+Implementado en `src/fit.rs`, con el comando completo `anime2waifu3d imagen IMAGEN SALIDA.glb [--base …]`: quita el fondo, analiza, ajusta y pinta. Deja al lado `_recorte.png` y `_analisis.png`. Tarda unos 25 s; casi todo es BiRefNet.
+
+- **Ajuste de Base_Female** con los puntos clave:
+  - Escala: metros por píxel, sacados de la altura.
+  - Vertical por tramos: pies, cintura, hombros, barbilla.
+  - La cabeza se escala entera desde la barbilla.
+  - El tronco se ensancha con los anchos de hombros y cintura, interpolados por alturas.
+  - Brazos y piernas se desplazan con sus articulaciones, y los brazos se alargan con el tronco.
+  - Los huesos siguen la misma regla, así que el modelo sigue riggeado: poses, física y exportación funcionan.
+- **Textura:** proyección frontal con los brazos caídos. Cada vértice toma la UV del píxel que tiene delante, y lo transparente se rellena con el color opaco más cercano.
+- **Resultado con Nagatoro** (cuerpo entero): se reconoce la cara, la camisa, la falda, la piel y los zapatos.
+  - Hay manchas donde la imagen tiene pelo o la otra mano delante.
+  - Los brazos de la imagen no están en la pose de proyección.
+  - La espalda repite el frente.
+  - No hay pelo con volumen.
+- **Siguiente:**
+  - Pelo con volumen desde la máscara de pelo, con cadenas.
+  - Brazos de la pose de la imagen.
+  - Dorso coherente: pelo y ropa por detrás, sin la cara.
+  - Falda como cono con física.
+  - Usar la profundidad.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

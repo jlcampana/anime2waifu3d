@@ -4,6 +4,7 @@ mod cutout;
 mod depth;
 mod export_glb;
 mod face;
+mod fit;
 mod hair;
 mod lighting;
 mod model;
@@ -615,6 +616,46 @@ fn run_analyze(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `anime2waifu3d imagen IMAGEN SALIDA.glb [--base Base_Female.vrm]`: de una ilustración a un
+/// modelo 3D (prototipo de la ruta desde imagen): quita el fondo, analiza partes y proporciones,
+/// ajusta el cuerpo base y le pinta la imagen. Deja al lado el recorte (`_recorte.png`) y la
+/// imagen del análisis (`_analisis.png`).
+fn run_image(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut base = std::path::PathBuf::from("assets/candidatas/vroid-cc0/base_female/Base_Female.vrm");
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--base" {
+            base = it.next().ok_or_else(|| anyhow::anyhow!("falta el modelo base"))?.into();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: imagen IMAGEN SALIDA.glb [--base Base_Female.vrm]") };
+    let output = std::path::Path::new(output);
+    let stem = output.with_extension("");
+    let start = std::time::Instant::now();
+    let image = image::open(input)?.to_rgba8();
+    println!("1/4 quitando el fondo…");
+    let cut = cutout::cut(&image, &cutout::default_model())?;
+    cut.save(format!("{}_recorte.png", stem.display()))?;
+    println!("2/4 analizando partes y proporciones…");
+    let analysis = analyze::analyze(&cut)?;
+    analyze::debug_image(&cut, &analysis).save(format!("{}_analisis.png", stem.display()))?;
+    let k = &analysis.keypoints;
+    println!("    {:.1} cabezas de alto{}", k.heads_tall, if analysis.skin_by_color { "" } else { " (piel no distinguible: alturas supuestas)" });
+    println!("3/4 ajustando el cuerpo base…");
+    let mut model = model::Model::load(&base)?;
+    model.name = stem.file_name().and_then(|s| s.to_str()).unwrap_or("personaje").to_string();
+    let adjusted = fit::fit(&mut model, k)?;
+    println!("    cabeza x{:.2}, hombros x{:.2}, cintura x{:.2}", adjusted.head, adjusted.shoulders, adjusted.waist);
+    println!("4/4 pintando la imagen…");
+    fit::project(&mut model, &cut, k, &adjusted)?;
+    export_glb::write(&model, output)?;
+    println!("-> {} en {:.1} s", output.display(), start.elapsed().as_secs_f32());
+    Ok(())
+}
+
 /// `anime2waifu3d export ENTRADA SALIDA.(glb|vrm|obj|fbx) [--solo-modelo] [--visibles]`: exporta
 /// un modelo o proyecto. `--solo-modelo` hace el GLB sin esqueleto; `--visibles` deja fuera las
 /// capas ocultas en el proyecto.
@@ -708,6 +749,13 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("analizar") {
         if let Err(error) = run_analyze(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("imagen") {
+        if let Err(error) = run_image(&args[1..]) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }
