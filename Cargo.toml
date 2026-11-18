@@ -1,0 +1,42 @@
+[package]
+name = "anime2waifu3d"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Ventana, GPU e interfaz: el mismo stack que doa.player
+winit = { version = "0.30", features = ["rwh_06"] }
+wgpu = { version = "22", features = ["wgsl"] }
+egui = "0.29"
+egui-winit = "0.29"
+egui-wgpu = "0.29"
+glam = "0.29"
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.3"
+
+# Modelos glTF/GLB/VRM e imágenes
+gltf = { version = "1", features = ["import", "names", "utils", "extras", "KHR_materials_emissive_strength"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+# Diálogos de archivo nativos (portal de escritorio en Fedora y Ubuntu)
+rfd = "0.15"
+
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
+# Las dependencias optimizadas también en debug: decodificar texturas sin optimizar es muy lento.
+[profile.dev.package."*"]
+opt-level = 2
