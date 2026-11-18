@@ -260,6 +260,20 @@ Implementado en `src/project.rs`.
   - Exportar las animaciones cuando haya línea de tiempo.
   - El VRM no está validado con un visor VRM (falta el VRM Add-on).
 
+## 6e. Ruta desde imagen, paso 1: quitar el fondo (2026-11-18)
+
+Implementado en `src/cutout.rs`, con el subcomando `anime2waifu3d recortar IMAGEN SALIDA.png [--modelo …]`.
+
+- **Modelo:** BiRefNet ToonOut en ONNX, fp32 (974 MB, MIT), en `assets/modelos/birefnet-toonout.onnx`. Elección del usuario frente a fp16 e isnet-anime.
+- **Runtime:** ONNX Runtime del sistema (paquete `onnxruntime` 1.26 de Fedora, elección del usuario), cargado al usarlo con el crate `ort` 2.0.0-rc.15 (`load-dynamic`, API 26). Sin él, el resto de la app funciona. `ORT_DYLIB_PATH` permite otra biblioteca, por ejemplo en Ubuntu.
+- **Proceso:**
+  - Entrada: la imagen a 1024×1024, RGB normalizado con ImageNet.
+  - Salida: máscara 0..1, que se escala al tamaño original y pasa al canal alfa.
+  - Se queda la pieza más grande (el personaje) y las de al menos el 10 % de su tamaño. Así desaparecen las letras sueltas de una portada.
+  - El resultado se recorta al personaje con un margen del 3 %.
+- **Tiempo:** unos 22 s por imagen en la CPU (4 núcleos).
+- **Resultado** con las cuatro imágenes de Nagatoro: limpio en ilustraciones y en blanco y negro. En las portadas quedan las letras que tocan al personaje.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

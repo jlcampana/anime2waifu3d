@@ -1,4 +1,5 @@
 mod app;
+mod cutout;
 mod export_glb;
 mod face;
 mod hair;
@@ -532,6 +533,28 @@ fn print_face(report: anyhow::Result<face::Report>) {
     }
 }
 
+/// `anime2waifu3d recortar IMAGEN SALIDA.png [--modelo birefnet.onnx]`: quita el fondo de una
+/// imagen (ruta desde imagen, paso 1).
+fn run_cutout(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut model = cutout::default_model();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--modelo" {
+            model = it.next().ok_or_else(|| anyhow::anyhow!("falta la ruta del modelo"))?.into();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: recortar IMAGEN SALIDA.png [--modelo birefnet.onnx]") };
+    let start = std::time::Instant::now();
+    let image = image::open(input)?.to_rgba8();
+    let cut = cutout::cut(&image, &model)?;
+    cut.save(output)?;
+    println!("{}x{} -> {output} ({}x{}) en {:.1} s", image.width(), image.height(), cut.width(), cut.height(), start.elapsed().as_secs_f32());
+    Ok(())
+}
+
 /// `anime2waifu3d export ENTRADA SALIDA.(glb|vrm|obj|fbx) [--solo-modelo] [--visibles]`: exporta
 /// un modelo o proyecto. `--solo-modelo` hace el GLB sin esqueleto; `--visibles` deja fuera las
 /// capas ocultas en el proyecto.
@@ -604,6 +627,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("rig") {
         if let Err(error) = run_rig(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("recortar") {
+        if let Err(error) = run_cutout(&args[1..]) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }

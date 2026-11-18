@@ -27,6 +27,11 @@ anyhow = "1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 
+# Quitar el fondo de una imagen en local (BiRefNet en ONNX). ONNX Runtime se carga del sistema
+# (paquete `onnxruntime` de Fedora, API 1.26) al usarlo, no al compilar.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-26"] }
+ndarray = "0.17"
+
 [profile.release]
 opt-level = 3
 lto = true
