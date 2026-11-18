@@ -48,9 +48,9 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - [x] **Falda y abrigo con física de tela:** hecho.
   - [x] **Cara animable:** elegiste geometría de párpados. Hecho: parpadeo, guiño, ojos felices (^^) y boca con vocales.
   - [x] **Formato de proyecto:** hecho. "Guardar proyecto…" (Ctrl+S) y "Exportar…" a GLB, VRM, GLB solo modelo, OBJ y FBX.
-  - [ ] **Ruta desde imagen:** imagen de anime → modelo, con quitar el fondo y ajustar Base_Female a la silueta. Pendiente: dime cuándo.
+  - [x] **Ruta desde imagen:** empezada el 2026-11-18, en la rama `ruta-imagen`. Paso 1 (quitar el fondo) hecho, con ONNX Runtime de Fedora y BiRefNet fp32, que elegiste tú.
 - [x] **VRM Add-on de Blender.** Me diste permiso. Está instalado en la carpeta aislada (versión 4.10.5) y el VRM exportado se ha validado con él. Si quieres verlo tú, instálalo en tu Blender desde Edit > Preferences > Get Extensions (busca "VRM").
-- [ ] **Unir la rama a `main`.** Todo está en la rama `visor-y-segmentacion` (GitHub `jlcampana/anime2waifu3d`). ¿Abro un PR y lo unes cuando lo hayas probado?
+- [x] **Unir la rama a `main`:** PR #1 unido el 2026-11-18.
 - [ ] **El modelo de la motosierra:**
   - necesita marcar la motosierra a mano (`--prop`), porque la segmentación confunde el metal con pelo;
   - tiene la cabeza girada y se queda sin párpados ni boca;
@@ -76,6 +76,8 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 - [ ] Base_Female y HairSample_Female de VRoid son CC0 (según sus metadatos VRM). Conviene que lo confirmes en la página oficial de VRoid antes de distribuir algo que los incluya.
 
 ## 5. Al final del proyecto
+
+- [ ] Ejecutar el script de instalación de dependencias que prepararé (pediste uno que lo instale todo). Instalará: Rust, las bibliotecas del sistema, `onnxruntime`, Blender (opcional, para FBX) y los modelos de `assets/modelos/`.
 
 - [ ] Revisar la documentación de la nueva interfaz que escribiré en `/home/pandi/Projects/doa.player`, para adaptarla allí. Es el último paso.
 - [ ] Decidir si quieres el modo low poly (estilo del vídeo de Grok de Nagatoro) como opción del producto final.
