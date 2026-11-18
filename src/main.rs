@@ -2,6 +2,7 @@ mod app;
 mod export_glb;
 mod lighting;
 mod model;
+mod physics;
 mod pose;
 mod renderer;
 mod rig;
@@ -29,6 +30,7 @@ struct Handler {
     /// Píxeles que tapan los paneles a izquierda y derecha, del último fotograma.
     insets: (f32, f32),
     selected_layer: Option<usize>,
+    last_frame: std::time::Instant,
 }
 
 impl ApplicationHandler for Handler {
@@ -59,7 +61,18 @@ impl ApplicationHandler for Handler {
             app.camera.set_aspect(w as f32 / h as f32);
             app.camera.set_insets(0.0, 0.0, w as f32, h as f32);
             self.options.apply(&mut app);
-            let result = app.screenshot(&path, w, h);
+            // Con --frames N, N capturas seguidas (archivo_00.png…) avanzando la animación.
+            let result = if self.options.frames > 1 {
+                let stem = path.with_extension("");
+                (0..self.options.frames).try_for_each(|k| {
+                    if k > 0 {
+                        app.tick(1.0 / self.options.fps);
+                    }
+                    app.screenshot(&std::path::PathBuf::from(format!("{}_{k:02}.png", stem.display())), w, h)
+                })
+            } else {
+                app.screenshot(&path, w, h)
+            };
             match result {
                 Ok(()) => println!("{} -> {}", app.status, path.display()),
                 Err(error) => {
@@ -112,6 +125,9 @@ impl ApplicationHandler for Handler {
                 app.camera.zoom(scroll);
             }
             WindowEvent::RedrawRequested => {
+                let now = std::time::Instant::now();
+                app.tick(now.duration_since(self.last_frame).as_secs_f32());
+                self.last_frame = now;
                 render_frame(app, window, &mut self.insets, &mut self.selected_layer);
                 window.request_redraw();
             }
@@ -245,6 +261,19 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
         if app.pose != before {
             app.apply_pose();
         }
+        ui.heading("Animación");
+        egui::ComboBox::from_id_salt("animacion").selected_text(app.animation.as_str()).show_ui(ui, |ui| {
+            for name in ["ninguna", "botar"] {
+                ui.selectable_value(&mut app.animation, name.to_string(), name);
+            }
+        });
+        ui.add(egui::Slider::new(&mut app.bounce, 0.0..=3.0).text("Rebote del pecho"));
+        let preset_name = physics::PRESETS[app.spring_preset].0;
+        egui::ComboBox::from_id_salt("muelle").selected_text(preset_name).show_ui(ui, |ui| {
+            for (i, (name, _)) in physics::PRESETS.iter().enumerate() {
+                ui.selectable_value(&mut app.spring_preset, i, *name);
+            }
+        });
     }
     ui.separator();
     ui.heading("Cámara");
@@ -413,7 +442,7 @@ fn main() {
             eprintln!("{error:#}");
             eprintln!(
                 "Uso: anime2waifu3d [modelo.glb|.gltf|.vrm] [--shot salida.png] [--size 1024x1024] \
-                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--wire-overlay] [--no-grid]"
+                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wire-overlay] [--no-grid]"
             );
             std::process::exit(2);
         }
@@ -429,6 +458,7 @@ fn main() {
         last_pos: (0.0, 0.0),
         insets: (0.0, 0.0),
         selected_layer: None,
+        last_frame: std::time::Instant::now(),
     };
     event_loop.run_app(&mut handler).expect("fallo en el bucle de eventos");
 }

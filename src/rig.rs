@@ -921,6 +921,58 @@ pub fn rig(target: &mut Model, base: &Model, props: &[Prop]) -> Result<Report> {
             .collect();
     }
 
+    // Pecho: el de Base_Female es pequeño y casi toda la piel del objetivo hereda los pesos del
+    // torso. Como en DOA, la zona alrededor de cada hueso de pecho recibe peso de ese hueso, con
+    // una caída suave, solo por delante del pecho.
+    let bust_radius = (thi.y - tlo.y) * 0.085;
+    let busts: Vec<(u16, Vec3, Vec3)> = ["J_Sec_L_Bust1", "J_Sec_R_Bust1"]
+        .iter()
+        .filter_map(|name| {
+            let b = skeleton.find(name)?;
+            let tip = skeleton.bones.iter().position(|x| x.parent == Some(b)).map(|t| world_fit[t].w_axis.truncate())?;
+            Some((b as u16, world_fit[b].w_axis.truncate(), tip))
+        })
+        .collect();
+    let mut bust_vertices = 0;
+    for g in 0..points.len() {
+        if fixed[g] || chain[g] != 0 {
+            continue;
+        }
+        let p = points[g].0;
+        let best = busts
+            .iter()
+            .map(|(bone, root, tip)| {
+                let forward = (*tip - *root).normalize_or_zero();
+                // Distancia a la punta, y solo si el punto está por delante de la raíz.
+                let ahead = (p - *root).dot(forward) > -bust_radius * 0.2;
+                let t = (1.0 - p.distance(*tip) / bust_radius).clamp(0.0, 1.0);
+                (*bone, if ahead { t * t * (3.0 - 2.0 * t) } else { 0.0 })
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        let Some((bone, w)) = best.filter(|x| x.1 > 0.01) else { continue };
+        let (j, wt) = own_weights[g];
+        let mut acc: HashMap<u16, f32> = HashMap::new();
+        for k in 0..4 {
+            if wt[k] > 0.0 {
+                *acc.entry(j[k]).or_default() += wt[k] * (1.0 - w);
+            }
+        }
+        *acc.entry(bone).or_default() += w;
+        let mut list: Vec<(u16, f32)> = acc.into_iter().collect();
+        list.sort_by(|a, b| b.1.total_cmp(&a.1));
+        list.truncate(4);
+        let total: f32 = list.iter().map(|x| x.1).sum::<f32>().max(1e-12);
+        let mut nj = [0u16; 4];
+        let mut nw = [0f32; 4];
+        for (k, (bb, x)) in list.into_iter().enumerate() {
+            nj[k] = bb;
+            nw[k] = x / total;
+        }
+        own_weights[g] = (nj, nw);
+        bust_vertices += 1;
+    }
+    eprintln!("pecho: {bust_vertices} vértices con peso de los huesos de pecho");
+
     // 4. Quitar la pose: cada vértice vuelve a la pose de reposo del modelo base. Donde la malla
     // une una extremidad con otra parte lejos de su raíz (la mano fusionada con la cadera), se
     // corta: el vértice se duplica, una copia por cadena, para que al moverse no arrastre la piel.

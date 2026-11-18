@@ -24,6 +24,15 @@ pub struct App {
     pub show_grid: bool,
     /// Pose predefinida (ver `pose::PRESETS`), si el modelo tiene esqueleto.
     pub pose: String,
+    /// Animación en curso (ver `ANIMATIONS`) y su tiempo.
+    pub animation: String,
+    pub anim_time: f32,
+    /// Intensidad del rebote del pecho, de 0 a 3 (1 es el valor del juego, como en doa.player).
+    pub bounce: f32,
+    /// Juego de valores del muelle (ver `physics::PRESETS`).
+    pub spring_preset: usize,
+    springs: [crate::physics::BustSpring; 2],
+    sim_accum: f32,
     pub status: String,
 }
 
@@ -49,6 +58,12 @@ impl App {
             light: 0,
             show_grid: true,
             pose: "reposo".into(),
+            animation: "ninguna".into(),
+            anim_time: 0.0,
+            bounce: 1.0,
+            spring_preset: 0,
+            springs: Default::default(),
+            sim_accum: 0.0,
             status: "Arrastra un modelo .glb, .gltf o .vrm a la ventana, o usa Abrir modelo".into(),
         }
     }
@@ -83,17 +98,72 @@ impl App {
         Ok(())
     }
 
-    /// Deforma el modelo con la pose elegida y sube los vértices a la GPU.
+    /// Deforma el modelo con la pose elegida (más la animación y el pecho) y sube los vértices
+    /// a la GPU.
     pub fn apply_pose(&mut self) {
         let Some(model) = &self.model else { return };
         let Some(skeleton) = &model.skeleton else { return };
-        match crate::pose::preset(skeleton, &self.pose) {
-            Some(local) => {
-                let vertices = crate::pose::skin_model(model, &local);
-                self.scene.set_vertices(&self.ctx.queue, &vertices);
+        let Some(mut local) = crate::pose::preset(skeleton, &self.pose) else {
+            self.status = format!("Pose desconocida: {}", self.pose);
+            return;
+        };
+        // Pecho: cada muelle gira su hueso hacia abajo o hacia arriba (eje X: el personaje mira
+        // hacia +Z). x negativo es quedarse atrás al subir, es decir, hacia abajo.
+        for (side, spring) in ["J_Sec_L_Bust1", "J_Sec_R_Bust1"].iter().zip(&self.springs) {
+            if let Some(b) = skeleton.find(side) {
+                local[b] = glam::Quat::from_rotation_x(-spring.x * 0.35 * self.bounce) * local[b];
             }
-            None => self.status = format!("Pose desconocida: {}", self.pose),
         }
+        let mut vertices = crate::pose::skin_model(model, &local);
+        let lift = self.body_offset();
+        if lift != 0.0 {
+            for layer in &mut vertices {
+                for primitive in layer {
+                    for v in primitive {
+                        v.position[1] += lift;
+                    }
+                }
+            }
+        }
+        self.scene.set_vertices(&self.ctx.queue, &vertices);
+    }
+
+    /// Altura del modelo, para escalar las animaciones.
+    fn model_height(&self) -> f32 {
+        self.model.as_ref().and_then(|m| m.bounds(false)).map_or(1.6, |(lo, hi)| hi.y - lo.y)
+    }
+
+    /// Desplazamiento vertical del cuerpo entero en la animación actual.
+    fn body_offset(&self) -> f32 {
+        match self.animation.as_str() {
+            // Saltitos de 1.5 por segundo, de un 4 % de la altura.
+            "botar" => self.model_height() * 0.04 * (std::f32::consts::PI * 1.5 * self.anim_time).sin().abs(),
+            _ => 0.0,
+        }
+    }
+
+    /// Avanza la animación y la física `dt` segundos, en pasos fijos de 1/60 s.
+    pub fn tick(&mut self, dt: f32) {
+        let animated = self.animation != "ninguna";
+        if !animated && self.springs.iter().all(|s| s.x.abs() < 1e-4) {
+            return;
+        }
+        let Some(chest_y) = self.model.as_ref().and_then(|m| m.skeleton.as_ref()).and_then(|s| s.bone("chest").map(|b| s.rest_position(b).y)) else {
+            return;
+        };
+        let params = crate::physics::PRESETS[self.spring_preset.min(crate::physics::PRESETS.len() - 1)].1;
+        self.sim_accum += dt.min(0.1);
+        while self.sim_accum >= 1.0 / 60.0 {
+            self.sim_accum -= 1.0 / 60.0;
+            if animated {
+                self.anim_time += 1.0 / 60.0;
+            }
+            let y = chest_y + self.body_offset();
+            for spring in &mut self.springs {
+                spring.step(&params, 1.0, y);
+            }
+        }
+        self.apply_pose();
     }
 
     pub fn frame(&mut self, shot: Shot) {
@@ -230,13 +300,20 @@ pub struct Options {
     pub camera: Option<Shot>,
     pub hide: Vec<String>,
     pub pose: Option<String>,
+    pub animation: Option<String>,
+    /// Número de fotogramas de la captura y fotogramas por segundo.
+    pub frames: u32,
+    pub fps: f32,
+    pub bounce: Option<f32>,
+    /// Giro de la cámara en grados tras el encuadre (90 es el perfil izquierdo).
+    pub yaw: Option<f32>,
     pub wire_overlay: bool,
     pub no_grid: bool,
 }
 
 impl Options {
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self> {
-        let mut options = Options { size: (1024, 1024), ..Default::default() };
+        let mut options = Options { size: (1024, 1024), frames: 1, fps: 12.0, ..Default::default() };
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             let mut value = || args.next().ok_or_else(|| anyhow::anyhow!("falta el valor de {arg}"));
@@ -264,6 +341,11 @@ impl Options {
                 }
                 "--hide" => options.hide.push(value()?.to_lowercase()),
                 "--pose" => options.pose = Some(value()?),
+                "--anim" => options.animation = Some(value()?),
+                "--frames" => options.frames = value()?.parse()?,
+                "--fps" => options.fps = value()?.parse()?,
+                "--bounce" => options.bounce = Some(value()?.parse()?),
+                "--yaw" => options.yaw = Some(value()?.parse()?),
                 "--wire-overlay" => options.wire_overlay = true,
                 "--no-grid" => options.no_grid = true,
                 _ if !arg.starts_with("--") && options.model.is_none() => options.model = Some(arg.into()),
@@ -287,6 +369,12 @@ impl Options {
             app.pose = pose.clone();
             app.apply_pose();
         }
+        if let Some(animation) = &self.animation {
+            app.animation = animation.clone();
+        }
+        if let Some(bounce) = self.bounce {
+            app.bounce = bounce;
+        }
         app.view.wire_overlay = self.wire_overlay;
         app.show_grid = !self.no_grid;
         if let Some(model) = &mut app.model {
@@ -298,6 +386,9 @@ impl Options {
         }
         if let Some(shot) = self.camera {
             app.frame(shot);
+        }
+        if let Some(yaw) = self.yaw {
+            app.camera.yaw = yaw.to_radians();
         }
     }
 }

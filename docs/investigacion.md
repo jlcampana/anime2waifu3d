@@ -113,6 +113,10 @@ Propuesta:
 - Se activa por personaje (por defecto, en personajes femeninos), no por una lista fija como en DOA.
 - Nota legal: los **números y fórmulas** son conocimiento medido y se pueden reutilizar. Las mallas y *shapes* de DOA no.
 
+**Estado (2026-11-18): primera versión hecha.** `src/physics.rs` implementa el muelle de 1 eje de DOA3 con tres juegos de valores ("normal (DOA3)", "suave (DOA2U)", "exagerado"). En el visor, con una animación de prueba ("botar", saltitos del 4 % de la altura a 1,5 Hz), cada muelle gira su hueso `J_Sec_*_Bust1` hasta ±0,35 rad × intensidad. El deslizador "Rebote del pecho" va de 0 a 3. Desde la línea de órdenes: `--anim botar --frames N --fps F --bounce X` saca N capturas seguidas.
+El rig añade **pesos de pecho por zona** (caída suave alrededor de cada hueso, solo por delante), porque el pecho de Base_Female es pequeño y la piel del objetivo heredaba casi todo del torso.
+Pendiente: los 3 ejes de DOAX2 (lateral y adelante-atrás) y la exportación como `VRMC_springBone`.
+
 ## 7. Paleta de capas: referencia PhotoCraft
 
 [storytold/photocraft](https://github.com/storytold/photocraft) (Apache-2.0/MIT, Rust): un clon de Photoshop hecho en Rust, con **wgpu + egui**, el mismo stack que doa.player. Usa un fork propio de egui 0.37; doa.player usa egui 0.29.
