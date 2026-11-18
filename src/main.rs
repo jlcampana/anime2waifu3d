@@ -1,10 +1,12 @@
 mod app;
 mod cutout;
+mod depth;
 mod export_glb;
 mod face;
 mod hair;
 mod lighting;
 mod model;
+mod onnx;
 mod physics;
 mod pose;
 mod project;
@@ -555,6 +557,28 @@ fn run_cutout(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `anime2waifu3d profundidad IMAGEN_RECORTADA SALIDA.png [--modelo depth.onnx]`: profundidad
+/// del personaje (ruta desde imagen, paso 2), en grises de 16 bits; blanco es lo más cercano.
+fn run_depth(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut model = depth::default_model();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--modelo" {
+            model = it.next().ok_or_else(|| anyhow::anyhow!("falta la ruta del modelo"))?.into();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: profundidad IMAGEN_RECORTADA SALIDA.png [--modelo depth.onnx]") };
+    let start = std::time::Instant::now();
+    let image = image::open(input)?.to_rgba8();
+    let map = depth::depth(&image, &model)?;
+    depth::save(&map, std::path::Path::new(output))?;
+    println!("{input} -> {output} en {:.1} s", start.elapsed().as_secs_f32());
+    Ok(())
+}
+
 /// `anime2waifu3d export ENTRADA SALIDA.(glb|vrm|obj|fbx) [--solo-modelo] [--visibles]`: exporta
 /// un modelo o proyecto. `--solo-modelo` hace el GLB sin esqueleto; `--visibles` deja fuera las
 /// capas ocultas en el proyecto.
@@ -634,6 +658,13 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("recortar") {
         if let Err(error) = run_cutout(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("profundidad") {
+        if let Err(error) = run_depth(&args[1..]) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }

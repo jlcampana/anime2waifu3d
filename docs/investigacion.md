@@ -274,6 +274,17 @@ Implementado en `src/cutout.rs`, con el subcomando `anime2waifu3d recortar IMAGE
 - **Tiempo:** unos 22 s por imagen en la CPU (4 núcleos).
 - **Resultado** con las cuatro imágenes de Nagatoro: limpio en ilustraciones y en blanco y negro. En las portadas quedan las letras que tocan al personaje.
 
+## 6f. Ruta desde imagen, paso 2a: profundidad (2026-11-18)
+
+Implementado en `src/depth.rs`, con el subcomando `anime2waifu3d profundidad IMAGEN_RECORTADA SALIDA.png`. ONNX Runtime se comparte con el recorte en `src/onnx.rs`.
+
+- **Modelo:** Depth Anything V2 small en ONNX, fp32 (99 MB, Apache-2.0, de `onnx-community`), en `assets/modelos/`. El usuario aprobó la descarga.
+- **Entrada:** la imagen con el lado largo a 518 px y los dos lados en múltiplos de 14, normalizada con ImageNet.
+- **Salida:** profundidad relativa inversa (más es más cerca). Se pasa a 0..1 antes de escalar al tamaño de la imagen, porque `resize` recorta los `f32` a ese rango. Después se normaliza dentro del personaje con los percentiles 1 y 99. Fuera del personaje vale 0.
+- Se guarda en grises de 16 bits; blanco es lo más cercano.
+- **Tiempo:** menos de 1 s por imagen en la CPU.
+- **Resultado** con las cuatro imágenes de Nagatoro: coherente. La cabeza y las manos que se acercan a la cámara quedan delante, y la espalda y la falda en sus planos.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:
