@@ -219,6 +219,39 @@ Pendiente:
 - Caras de perfil o giradas.
 - Un ojo solo.
 
+## 6d. Formato de proyecto y exportaciones (2026-11-18)
+
+Implementado en `src/project.rs`.
+
+- **Proyecto.**
+  - Es un GLB normal, con nombre `*.proyecto.glb`, que se abre en Blender y en cualquier visor glTF.
+  - Guarda el estado de la app en `extras.anime2waifu3d`, con `version` 1:
+    - capas: visibilidad, opacidad, plegado y física propia, por nombre;
+    - pose, animación y rebote;
+    - física: activa, juegos de valores de pelo y ropa, y viento;
+    - expresión y parpadeo;
+    - luz, modo de vista, alambre y rejilla;
+    - cámara.
+  - Al abrirlo, la app lo restaura. Las capas se emparejan por índice si el nombre coincide y, si no, por nombre, por si el archivo se edita fuera.
+  - Se guarda con "Guardar proyecto…" o Ctrl+S (que guarda directamente si lo abierto ya es un `.proyecto.glb`), y en capturas con `--save-project`.
+- **Exportaciones.** Desde el menú "Exportar…" o con `anime2waifu3d export ENTRADA SALIDA [--solo-modelo] [--visibles]`; el formato sale de la extensión.
+
+  | Formato | Qué lleva |
+  |---|---|
+  | GLB completo | Esqueleto, pesos, formas, `VRMC_springBone` y expresiones VRM |
+  | VRM 1.0 | Lo mismo, con extensión `.vrm` |
+  | GLB solo modelo y texturas | Mallas estáticas en reposo, sin esqueleto |
+  | OBJ + MTL + PNG | Solo modelo y texturas |
+  | FBX | El GLB completo convertido con Blender en segundo plano (`--factory-startup`), si está instalado |
+
+  - "Solo capas visibles" deja fuera lo oculto en la paleta, también lo que está dentro de grupos ocultos.
+  - La opacidad de una capa pasa a un material propio con transparencia.
+- **Comprobado en Blender 5.2:** GLB, VRM y FBX llegan con 236 huesos, las mallas, las shape keys y la textura. El GLB estático y el OBJ, sin esqueleto. El OBJ con `--visibles` deja fuera los mechones ocultos.
+- **Pendiente:**
+  - Abrir y guardar VRM 0.x y PMX.
+  - Exportar las animaciones cuando haya línea de tiempo.
+  - El VRM no está validado con un visor VRM (falta el VRM Add-on).
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

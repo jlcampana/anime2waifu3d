@@ -96,6 +96,7 @@ dependencies = [
  "log",
  "pollster 0.3.0",
  "rfd",
+ "serde",
  "serde_json",
  "wgpu",
  "winit",

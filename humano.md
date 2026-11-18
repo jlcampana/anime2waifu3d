@@ -38,6 +38,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - `falda_viento.png`;
   - `expresiones.png`;
   - `hablar.gif`.
+- [ ] Prueba a guardar un proyecto (Ctrl+S), cerrarlo y volver a abrirlo. También a exportar con "Exportar…" y abrir el resultado en Blender.
 - [ ] Dime lo que veas mal o raro, con el modelo, la pose o la animación, y la zona. Si puedes, añade una captura.
 
 ## 2. Decisiones que necesito
@@ -45,7 +46,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 - [x] **Siguiente bloque grande.** Lo que has decidido:
   - [x] **Falda y abrigo con física de tela:** hecho.
   - [x] **Cara animable:** elegiste geometría de párpados. Hecho: parpadeo, guiño, ojos felices (^^) y boca con vocales.
-  - [x] **Formato de proyecto:** elegido el 2026-11-18; en curso.
+  - [x] **Formato de proyecto:** hecho. "Guardar proyecto…" (Ctrl+S) y "Exportar…" a GLB, VRM, GLB solo modelo, OBJ y FBX.
   - [ ] **Ruta desde imagen:** imagen de anime → modelo, con quitar el fondo y ajustar Base_Female a la silueta. Pendiente: dime cuándo.
 - [ ] **VRM Add-on de Blender.** Para comprobar que la física del pelo exportada (`VRMC_springBone`) funciona fuera de la app hace falta instalar el add-on oficial "VRM Add-on for Blender", que es gratuito. Tienes dos opciones:
   - darme permiso para descargarlo e instalarlo en la carpeta aislada de Blender, sin tocar tu configuración;

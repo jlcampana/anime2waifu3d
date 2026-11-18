@@ -345,7 +345,7 @@ pub fn rig(target: &mut Model, base: &Model, props: &[Prop]) -> Result<Report> {
             let n = tri_vertices.len() as u32;
             indices.extend([n - 3, n - 2, n - 1]);
         }
-        let mut debug = Model { name: "ajuste".into(), layers: Vec::new(), materials: Vec::new(), textures: Vec::new(), skeleton: None };
+        let mut debug = Model { name: "ajuste".into(), layers: Vec::new(), materials: Vec::new(), textures: Vec::new(), skeleton: None, project: None };
         std::mem::swap(&mut debug.materials, &mut target.materials);
         std::mem::swap(&mut debug.textures, &mut target.textures);
         std::mem::swap(&mut debug.layers, &mut target.layers);
@@ -591,7 +591,7 @@ pub fn rig(target: &mut Model, base: &Model, props: &[Prop]) -> Result<Report> {
                 }
             }
         }
-        let debug = Model { name: "cadenas".into(), layers, materials: std::mem::take(&mut target.materials), textures: std::mem::take(&mut target.textures), skeleton: None };
+        let debug = Model { name: "cadenas".into(), layers, materials: std::mem::take(&mut target.materials), textures: std::mem::take(&mut target.textures), skeleton: None, project: None };
         let _ = crate::export_glb::write(&debug, std::path::Path::new(&path));
         target.materials = debug.materials;
         target.textures = debug.textures;

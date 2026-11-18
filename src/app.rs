@@ -22,6 +22,8 @@ pub struct App {
     pub grid: GridRenderer,
     pub scene: SceneRenderer,
     pub model: Option<Model>,
+    /// Archivo abierto o guardado por última vez.
+    pub path: Option<std::path::PathBuf>,
     pub view: ViewSettings,
     pub light: usize,
     pub show_grid: bool,
@@ -69,6 +71,7 @@ impl App {
             grid,
             scene,
             model: None,
+            path: None,
             view: ViewSettings::default(),
             light: 0,
             show_grid: true,
@@ -116,10 +119,147 @@ impl App {
             self.status += &format!(", {} huesos ({} humanoides)", skeleton.bones.len(), skeleton.humanoid.len());
         }
         self.hair = crate::hair::HairSim::new(&model);
+        let project = crate::project::read(&model);
         self.model = Some(model);
-        self.settle();
+        self.path = Some(path.to_path_buf());
         self.frame(Shot::Full);
+        match project {
+            Some(project) => {
+                self.apply_project(&project);
+                self.status += " (proyecto)";
+            }
+            None => self.settle(),
+        }
         Ok(())
+    }
+
+    /// El estado de la app, para guardarlo con el proyecto.
+    pub fn project_state(&self) -> crate::project::Project {
+        use crate::project::{CameraState, LayerState, Project, VERSION};
+        let layers = self.model.as_ref().map_or(Vec::new(), |m| {
+            m.layers
+                .iter()
+                .enumerate()
+                .map(|(i, l)| LayerState {
+                    name: l.name.clone(),
+                    visible: l.visible,
+                    opacity: l.opacity,
+                    expanded: l.expanded,
+                    physics: self.hair_layer_preset(i).flatten().map(|p| crate::hair::PRESETS[p].0.to_string()),
+                })
+                .collect()
+        });
+        Project {
+            version: VERSION,
+            view_mode: match self.view.mode {
+                ViewMode::Textured => "tex",
+                ViewMode::Solid => "solid",
+                ViewMode::Wireframe => "wire",
+                ViewMode::LayerColors => "layers",
+            }
+            .into(),
+            wire_overlay: self.view.wire_overlay,
+            show_grid: self.show_grid,
+            light: self.light,
+            pose: self.pose.clone(),
+            animation: self.animation.clone(),
+            bounce: self.bounce,
+            spring_preset: self.spring_preset,
+            hair_physics: self.hair_physics,
+            hair_preset: self.hair_preset,
+            cloth_preset: self.cloth_preset,
+            wind: self.wind,
+            expression: self.expression.clone(),
+            auto_blink: self.auto_blink,
+            camera: Some(CameraState {
+                target: self.camera.target.to_array(),
+                distance: self.camera.distance,
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
+            }),
+            layers,
+        }
+    }
+
+    /// Restaura el estado de un proyecto. Las capas se emparejan por índice si el nombre
+    /// coincide; si no, por nombre.
+    pub fn apply_project(&mut self, project: &crate::project::Project) {
+        self.view.mode = match project.view_mode.as_str() {
+            "solid" => ViewMode::Solid,
+            "wire" => ViewMode::Wireframe,
+            "layers" => ViewMode::LayerColors,
+            _ => ViewMode::Textured,
+        };
+        self.view.wire_overlay = project.wire_overlay;
+        self.show_grid = project.show_grid;
+        self.light = project.light.min(PRESETS.len() - 1);
+        if !project.pose.is_empty() {
+            self.pose = project.pose.clone();
+        }
+        if !project.animation.is_empty() {
+            self.animation = project.animation.clone();
+        }
+        self.bounce = project.bounce;
+        self.spring_preset = project.spring_preset.min(crate::physics::PRESETS.len() - 1);
+        self.hair_physics = project.hair_physics;
+        self.hair_preset = project.hair_preset.min(crate::hair::PRESETS.len() - 1);
+        self.cloth_preset = project.cloth_preset.min(crate::hair::PRESETS.len() - 1);
+        self.wind = project.wind;
+        if !project.expression.is_empty() {
+            self.expression = project.expression.clone();
+        }
+        self.auto_blink = project.auto_blink;
+        if let Some(camera) = &project.camera {
+            self.camera.target = glam::Vec3::from(camera.target);
+            self.camera.distance = camera.distance;
+            self.camera.yaw = camera.yaw;
+            self.camera.pitch = camera.pitch;
+        }
+        let mut physics: Vec<(usize, Option<usize>)> = Vec::new();
+        if let Some(model) = &mut self.model {
+            for (i, state) in project.layers.iter().enumerate() {
+                let index = if model.layers.get(i).is_some_and(|l| l.name == state.name) {
+                    Some(i)
+                } else {
+                    model.layers.iter().position(|l| l.name == state.name)
+                };
+                let Some(index) = index else { continue };
+                let layer = &mut model.layers[index];
+                layer.visible = state.visible;
+                layer.opacity = state.opacity.clamp(0.0, 1.0);
+                layer.expanded = state.expanded;
+                let preset = state.physics.as_ref().and_then(|name| crate::hair::PRESETS.iter().position(|(n, _)| n == name));
+                physics.push((index, preset));
+            }
+        }
+        // En orden de capas: un grupo primero y luego lo propio de cada hija.
+        for (index, preset) in physics {
+            if self.hair_layer_preset(index).is_some() {
+                self.set_hair_layer_preset(index, preset);
+            }
+        }
+        self.settle();
+    }
+
+    /// Guarda el proyecto (modelo entero y estado) en un GLB.
+    pub fn save_project(&mut self, path: &Path) {
+        let Some(model) = &self.model else { return };
+        let state = self.project_state();
+        self.status = match crate::project::save(model, &state, path) {
+            Ok(()) => {
+                self.path = Some(path.to_path_buf());
+                format!("Proyecto guardado en {}", path.display())
+            }
+            Err(error) => format!("Error al guardar {}: {error:#}", path.display()),
+        };
+    }
+
+    pub fn export(&mut self, path: &Path, format: crate::project::Format, only_visible: bool) {
+        let Some(model) = &self.model else { return };
+        self.status = match crate::project::export(model, path, format, only_visible) {
+            Ok(()) => format!("Exportado a {}", path.display()),
+            Err(error) => format!("Error al exportar {}: {error:#}", path.display()),
+        };
     }
 
     /// Juego de valores de la física de una capa de pelo: `None` si no mueve ninguna cadena,
@@ -436,6 +576,8 @@ pub struct Options {
     pub wind: Option<f32>,
     pub no_hair: bool,
     pub expression: Option<String>,
+    /// Guarda el proyecto tras aplicar las opciones (para probar sin ventana).
+    pub save_project: Option<std::path::PathBuf>,
     /// Física propia de capas de pelo: (parte del nombre, juego de valores).
     pub hair_layers: Vec<(String, String)>,
 }
@@ -480,6 +622,7 @@ impl Options {
                 "--wind" => options.wind = Some(value()?.parse()?),
                 "--no-hair" => options.no_hair = true,
                 "--expression" => options.expression = Some(value()?),
+                "--save-project" => options.save_project = Some(value()?.into()),
                 "--hair-layer" => {
                     let v = value()?;
                     let (layer, preset) = v.rsplit_once('=').ok_or_else(|| anyhow::anyhow!("--hair-layer es capa=valores"))?;
@@ -544,6 +687,9 @@ impl Options {
         }
         if let Some(yaw) = self.yaw {
             app.camera.yaw = yaw.to_radians();
+        }
+        if let Some(path) = &self.save_project {
+            app.save_project(path);
         }
     }
 }

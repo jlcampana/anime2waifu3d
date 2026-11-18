@@ -6,6 +6,7 @@ mod lighting;
 mod model;
 mod physics;
 mod pose;
+mod project;
 mod renderer;
 mod rig;
 mod segment;
@@ -225,8 +226,39 @@ fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selecte
 }
 
 fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_shot: &mut Option<Shot>) {
-    if ui.button("Abrir modelo…").clicked() {
+    if ui.button("Abrir modelo o proyecto…").clicked() {
         *open_dialog = true;
+    }
+    if app.model.is_some() {
+        if ui.button("Guardar proyecto… (Ctrl+S)").clicked() {
+            save_project_dialog(app);
+        }
+        // Ctrl+S guarda sobre el proyecto abierto; si lo abierto no es un proyecto, pregunta.
+        if ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+            match app.path.clone().filter(|p| p.to_string_lossy().ends_with(".proyecto.glb")) {
+                Some(path) => app.save_project(&path),
+                None => save_project_dialog(app),
+            }
+        }
+        ui.menu_button("Exportar…", |ui| {
+            let mut only_visible = ui.ctx().data_mut(|d| *d.get_temp_mut_or(egui::Id::new("solo-visibles"), true));
+            ui.checkbox(&mut only_visible, "Solo capas visibles");
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("solo-visibles"), only_visible));
+            for format in project::Format::ALL {
+                if ui.button(format.name()).clicked() {
+                    ui.close_menu();
+                    let stem = app.path.as_ref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("modelo").to_string();
+                    let stem = stem.trim_end_matches(".proyecto").to_string();
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter(format.name(), &[format.extension()])
+                        .set_file_name(format!("{stem}.{}", format.extension()))
+                        .save_file()
+                    {
+                        app.export(&path, format, only_visible);
+                    }
+                }
+            }
+        });
     }
     ui.separator();
     ui.heading("Vista");
@@ -315,6 +347,19 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
         if ui.button(shot.name()).clicked() {
             *frame_shot = Some(shot);
         }
+    }
+}
+
+/// Diálogo para guardar el proyecto (un GLB con el estado de la app).
+fn save_project_dialog(app: &mut App) {
+    let name = app
+        .path
+        .as_ref()
+        .and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str())
+        .map_or("proyecto".to_string(), |s| if s.ends_with(".proyecto") { s.to_string() } else { format!("{s}.proyecto") });
+    if let Some(path) = rfd::FileDialog::new().add_filter("Proyecto anime2waifu3d (GLB)", &["glb"]).set_file_name(format!("{name}.glb")).save_file() {
+        app.save_project(&path);
     }
 }
 
@@ -487,6 +532,31 @@ fn print_face(report: anyhow::Result<face::Report>) {
     }
 }
 
+/// `anime2waifu3d export ENTRADA SALIDA.(glb|vrm|obj|fbx) [--solo-modelo] [--visibles]`: exporta
+/// un modelo o proyecto. `--solo-modelo` hace el GLB sin esqueleto; `--visibles` deja fuera las
+/// capas ocultas en el proyecto.
+fn run_export(args: &[String]) -> anyhow::Result<()> {
+    let static_only = args.iter().any(|a| a == "--solo-modelo");
+    let only_visible = args.iter().any(|a| a == "--visibles");
+    let files: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: export ENTRADA SALIDA.(glb|vrm|obj|fbx) [--solo-modelo] [--visibles]") };
+    let output = std::path::Path::new(output.as_str());
+    let format = project::Format::from_path(output, static_only).ok_or_else(|| anyhow::anyhow!("formato desconocido: usa .glb, .vrm, .obj o .fbx"))?;
+    let mut model = model::Model::load(std::path::Path::new(input.as_str()))?;
+    // La visibilidad y la opacidad de las capas, las del proyecto si lo es.
+    if let Some(state) = project::read(&model) {
+        for (layer, saved) in model.layers.iter_mut().zip(&state.layers) {
+            if layer.name == saved.name {
+                layer.visible = saved.visible;
+                layer.opacity = saved.opacity;
+            }
+        }
+    }
+    project::export(&model, output, format, only_visible)?;
+    println!("{} -> {}", format.name(), output.display());
+    Ok(())
+}
+
 /// `anime2waifu3d face ENTRADA.glb SALIDA.glb [--debug cara.png]`: párpados para un modelo ya
 /// riggeado (lo hace también `rig`).
 fn run_face(args: &[String]) -> anyhow::Result<()> {
@@ -539,6 +609,13 @@ fn main() {
         }
         return;
     }
+    if args.first().map(String::as_str) == Some("export") {
+        if let Err(error) = run_export(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().map(String::as_str) == Some("face") {
         if let Err(error) = run_face(&args[1..]) {
             eprintln!("{error:#}");
@@ -566,7 +643,7 @@ fn main() {
             eprintln!("{error:#}");
             eprintln!(
                 "Uso: anime2waifu3d [modelo.glb|.gltf|.vrm] [--shot salida.png] [--size 1024x1024] \
-                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wind 0..1] [--no-hair] [--hair-layer capa=valores] [--expression neutral|parpadeo|feliz…] [--wire-overlay] [--no-grid]"
+                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wind 0..1] [--no-hair] [--hair-layer capa=valores] [--expression neutral|parpadeo|feliz…] [--save-project proyecto.glb] [--wire-overlay] [--no-grid]"
             );
             std::process::exit(2);
         }

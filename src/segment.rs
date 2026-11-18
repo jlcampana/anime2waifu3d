@@ -505,7 +505,7 @@ pub fn into_model(model: Model, segments: &[Segment]) -> Model {
             layers.push(layer(&segment.name, Some(group), 2, primitives));
         }
     }
-    Model { name: model.name, layers, materials: model.materials, textures: model.textures, skeleton: model.skeleton }
+    Model { name: model.name, layers, materials: model.materials, textures: model.textures, skeleton: model.skeleton, project: None }
 }
 
 pub fn srgb_to_linear(c: f32) -> f32 {

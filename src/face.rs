@@ -23,9 +23,8 @@ const GRID: usize = 384;
 struct Cell {
     z: f32,
     color: [f32; 3],
-    /// Si viene de una capa de piel o de pelo de la segmentación.
+    /// Si viene de una capa de piel de la segmentación.
     skin: bool,
-    hair: bool,
 }
 
 pub struct Eye {
@@ -215,7 +214,7 @@ fn rasterize(model: &Model, head: usize, low: Vec2, high: Vec2, size: f32) -> Ra
             return;
         }
         if cells[cell].map_or(true, |c| z > c.z) {
-            cells[cell] = Some(Cell { z, color: sample(model, material, uv), skin: is_skin[l], hair: hair[l] });
+            cells[cell] = Some(Cell { z, color: sample(model, material, uv), skin: is_skin[l] });
         }
     });
     Raster { low, high, cells }

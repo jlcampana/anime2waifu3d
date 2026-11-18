@@ -8,6 +8,11 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 pub fn write(model: &Model, path: &Path) -> Result<()> {
+    write_with(model, path, None)
+}
+
+/// Como `write`, con el estado del proyecto en `extras.anime2waifu3d`.
+pub fn write_with(model: &Model, path: &Path, project: Option<&Value>) -> Result<()> {
     let mut bin: Vec<u8> = Vec::new();
     let mut views: Vec<Value> = Vec::new();
     let mut accessors: Vec<Value> = Vec::new();
@@ -242,6 +247,9 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
             document["extensionsUsed"] = json!(["VRMC_vrm", "VRMC_springBone"]);
             document["extensions"]["VRMC_springBone"] = hair.spring_bone_extension(skeleton);
         }
+    }
+    if let Some(project) = project {
+        document["extras"] = json!({ "anime2waifu3d": project });
     }
     if !images.is_empty() {
         document["images"] = json!(images);

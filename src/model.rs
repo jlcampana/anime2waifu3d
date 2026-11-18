@@ -17,6 +17,7 @@ pub struct Vertex {
     pub uv: [f32; 2],
 }
 
+#[derive(Clone)]
 pub struct Primitive {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
@@ -28,6 +29,7 @@ pub struct Primitive {
     pub morphs: Vec<Morph>,
 }
 
+#[derive(Clone)]
 pub struct Morph {
     pub name: String,
     pub deltas: Vec<[f32; 3]>,
@@ -65,6 +67,7 @@ impl Primitive {
     }
 }
 
+#[derive(Clone)]
 pub struct Bone {
     pub name: String,
     pub parent: Option<usize>,
@@ -72,6 +75,7 @@ pub struct Bone {
     pub rest_world: Mat4,
 }
 
+#[derive(Clone)]
 pub struct Skeleton {
     pub bones: Vec<Bone>,
     /// Nombre humanoide VRM (hips, leftUpperArm…) -> hueso.
@@ -99,6 +103,7 @@ pub enum AlphaMode {
     Blend,
 }
 
+#[derive(Clone)]
 pub struct Material {
     pub name: String,
     pub base_color: [f32; 4],
@@ -107,6 +112,7 @@ pub struct Material {
     pub double_sided: bool,
 }
 
+#[derive(Clone)]
 pub struct Texture {
     pub width: u32,
     pub height: u32,
@@ -114,6 +120,7 @@ pub struct Texture {
 }
 
 /// Una capa de la paleta. Las capas forman un árbol: ocultar una oculta sus hijas.
+#[derive(Clone)]
 pub struct Layer {
     pub name: String,
     pub parent: Option<usize>,
@@ -124,12 +131,15 @@ pub struct Layer {
     pub expanded: bool,
 }
 
+#[derive(Clone)]
 pub struct Model {
     pub name: String,
     pub layers: Vec<Layer>,
     pub materials: Vec<Material>,
     pub textures: Vec<Texture>,
     pub skeleton: Option<Skeleton>,
+    /// Estado del proyecto guardado en el archivo (`extras.anime2waifu3d`), si lo había.
+    pub project: Option<serde_json::Value>,
 }
 
 impl Model {
@@ -195,7 +205,53 @@ impl Model {
         anyhow::ensure!(!layers.is_empty(), "el archivo no tiene mallas");
 
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Self { name, layers, materials, textures, skeleton })
+        // Estado del proyecto, si el archivo es un proyecto de anime2waifu3d.
+        let project = raw_json(path).and_then(|j| j.get("extras")?.get("anime2waifu3d").cloned());
+        Ok(Self { name, layers, materials, textures, skeleton, project })
+    }
+
+    /// Copia para exportar: con `only_visible`, sin las capas ocultas (ni las de grupos
+    /// ocultos); las capas con opacidad pasan a materiales propios con transparencia; sin
+    /// `skeleton`, mallas estáticas en reposo (solo modelo y texturas).
+    pub fn export_copy(&self, only_visible: bool, skeleton: bool) -> Model {
+        let mut materials = self.materials.clone();
+        let mut layers: Vec<Layer> = Vec::new();
+        let mut remap: Vec<Option<usize>> = Vec::new();
+        for (i, layer) in self.layers.iter().enumerate() {
+            if only_visible && !self.effective_visible(i) {
+                remap.push(None);
+                continue;
+            }
+            remap.push(Some(layers.len()));
+            let mut copy = layer.clone();
+            copy.parent = layer.parent.and_then(|p| remap[p]);
+            copy.visible = true;
+            copy.opacity = 1.0;
+            let opacity = self.effective_opacity(i);
+            for primitive in &mut copy.primitives {
+                if opacity < 0.999 {
+                    let mut material = materials[primitive.material].clone();
+                    material.base_color[3] *= opacity;
+                    material.alpha = AlphaMode::Blend;
+                    material.name = format!("{} ({}%)", material.name, (opacity * 100.0).round());
+                    materials.push(material);
+                    primitive.material = materials.len() - 1;
+                }
+                if !skeleton {
+                    primitive.joints.clear();
+                    primitive.weights.clear();
+                }
+            }
+            layers.push(copy);
+        }
+        Model {
+            name: self.name.clone(),
+            layers,
+            materials,
+            textures: self.textures.clone(),
+            skeleton: if skeleton { self.skeleton.clone() } else { None },
+            project: None,
+        }
     }
 
     /// Visible si la capa y todas sus antecesoras lo son.
