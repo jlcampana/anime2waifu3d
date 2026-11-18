@@ -285,6 +285,33 @@ Implementado en `src/depth.rs`, con el subcomando `anime2waifu3d profundidad IMA
 - **Tiempo:** menos de 1 s por imagen en la CPU.
 - **Resultado** con las cuatro imágenes de Nagatoro: coherente. La cabeza y las manos que se acercan a la cámara quedan delante, y la espalda y la falda en sus planos.
 
+## 6g. Ruta desde imagen, paso 2b: partes y puntos clave (2026-11-18)
+
+Implementado en `src/analyze.rs`, con el subcomando `anime2waifu3d analizar IMAGEN_RECORTADA SALIDA.json [--imagen comprobacion.png]`. No necesita modelos.
+
+- **Partes.** k-means (8 grupos) en Lab sobre el personaje.
+  - **Piel:** grupos con tono de piel anime (L 35–97, croma 5–55, tono 15–90°).
+  - **Pelo:** el grupo más frecuente en el 8 % de arriba que no es piel, más los grupos a menos de ΔE 22, crecido por conexión desde arriba.
+  - **Calzado:** lo que no es piel en el último 6 %.
+  - **Ropa:** el resto.
+- **Puntos clave**, sobre la silueta sin pelo, en el tramo continuo que contiene el centro:
+  - **Barbilla:** donde la mancha de piel de la cara se estrecha a menos del 60 % de su ancho máximo (la piel del cuello y el escote va pegada).
+  - **Hombros:** lo más ancho en las 0.7 cabezas de debajo.
+  - **Entrepierna:** donde el centro deja de ser cuerpo.
+  - **Cintura:** lo más estrecho entre hombros y entrepierna.
+  - **Cadera:** lo más ancho entre cintura y entrepierna.
+  - **Rodillas:** a mitad de pierna.
+  - El JSON guarda los puntos y las proporciones (cabezas de alto, anchos relativos a la cara).
+- **Resultado** con Nagatoro:
+  - Cuerpo entero: 6.4 cabezas, coherente.
+  - Las portadas no son de cuerpo entero, así que su número de cabezas no vale.
+  - En blanco y negro no se distingue la piel: solo silueta.
+  - La primera versión confundía la falda azul marino con el pelo negro (margen ΔE 28); con 22 ya no.
+- **Pendiente:**
+  - Corregir partes y puntos a mano en la app.
+  - Brazos y piernas por separado.
+  - Ojos y boca en 2D.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

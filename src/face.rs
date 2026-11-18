@@ -111,7 +111,7 @@ fn sample(model: &Model, material: usize, uv: [f32; 2]) -> [f32; 3] {
 }
 
 /// sRGB (0..1) a Lab.
-fn lab(c: [f32; 3]) -> Vec3 {
+pub(crate) fn lab(c: [f32; 3]) -> Vec3 {
     let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
     let [r, g, b] = c.map(lin);
     let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;

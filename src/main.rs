@@ -1,3 +1,4 @@
+mod analyze;
 mod app;
 mod cutout;
 mod depth;
@@ -579,6 +580,41 @@ fn run_depth(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `anime2waifu3d analizar IMAGEN_RECORTADA SALIDA.json [--imagen comprobacion.png]`: partes y
+/// puntos clave de la imagen (ruta desde imagen, paso 2b).
+fn run_analyze(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut debug = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--imagen" {
+            debug = it.next().cloned();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: analizar IMAGEN_RECORTADA SALIDA.json [--imagen comprobacion.png]") };
+    let image = image::open(input)?.to_rgba8();
+    let analysis = analyze::analyze(&image)?;
+    std::fs::write(output, serde_json::to_string_pretty(&analysis)?)?;
+    if let Some(path) = debug {
+        analyze::debug_image(&image, &analysis).save(path)?;
+    }
+    let k = &analysis.keypoints;
+    if k.face_width > 0.0 {
+        println!(
+            "{input}: {:.1} cabezas, hombros {:.2}, cintura {:.2}, cadera {:.2} (anchos entre el de la cara)",
+            k.heads_tall,
+            k.shoulder_width / k.face_width,
+            k.waist_width / k.face_width,
+            k.hip_width / k.face_width
+        );
+    } else {
+        println!("{input}: sin cara reconocible (piel no distinguible por color): solo la silueta, alturas supuestas");
+    }
+    Ok(())
+}
+
 /// `anime2waifu3d export ENTRADA SALIDA.(glb|vrm|obj|fbx) [--solo-modelo] [--visibles]`: exporta
 /// un modelo o proyecto. `--solo-modelo` hace el GLB sin esqueleto; `--visibles` deja fuera las
 /// capas ocultas en el proyecto.
@@ -665,6 +701,13 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("profundidad") {
         if let Err(error) = run_depth(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("analizar") {
+        if let Err(error) = run_analyze(&args[1..]) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }
