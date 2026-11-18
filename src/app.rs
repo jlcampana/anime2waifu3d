@@ -37,6 +37,8 @@ pub struct App {
     hair: Option<crate::hair::HairSim>,
     pub hair_physics: bool,
     pub hair_preset: usize,
+    /// Juego de valores de la ropa (faldas y abrigos).
+    pub cloth_preset: usize,
     pub wind: f32,
     sim_time: f32,
     sim_accum: f32,
@@ -73,6 +75,7 @@ impl App {
             hair: None,
             hair_physics: true,
             hair_preset: 0,
+            cloth_preset: 0,
             wind: 0.0,
             sim_time: 0.0,
             sim_accum: 0.0,
@@ -177,10 +180,11 @@ impl App {
         let height = self.model_height();
         let wind = glam::Vec3::new(0.6, 0.0, -1.0).normalize() * self.wind * gust * height * 0.0025;
         let params = crate::hair::PRESETS[self.hair_preset.min(crate::hair::PRESETS.len() - 1)].1;
+        let cloth = crate::hair::PRESETS[self.cloth_preset.min(crate::hair::PRESETS.len() - 1)].1;
         let (Some(model), Some(hair)) = (&self.model, &mut self.hair) else { return };
         let Some(skeleton) = &model.skeleton else { return };
         let skin = crate::pose::skin_matrices(skeleton, &local);
-        hair.step(skeleton, &skin, offset, &params, wind);
+        hair.step(skeleton, &skin, offset, &params, &cloth, wind);
     }
 
     /// Deja el pelo asentado en la pose actual (para cambiar de pose o hacer una captura).

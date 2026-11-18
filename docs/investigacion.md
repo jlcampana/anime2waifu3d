@@ -155,6 +155,31 @@ Pendiente:
 - Guardar la física de cada capa en el proyecto y exportarla (hoy solo vive en el visor).
 - Opacidad animable.
 
+### Faldas y abrigos con física (2026-11-18)
+
+Usa el mismo constructor de cadenas que el pelo (`build_chains` en `src/hair.rs`), con `rig_skirt`. Lo ejecutan `rig` y `hair`.
+
+- **Qué entra:** las capas de ropa de cintura para abajo, sin las de pies. Las cadenas `J_Sec_Skirt{n}_{k}` cuelgan de la cadera, por sectores de 30° alrededor de su eje, y la raíz está a la altura del hueso de la cadera.
+- **Ceñido o suelto.** Las mallas de SupaVoxel son una sola piel, así que el abrigo y la media están unidos y hay que separarlos.
+  1. Por cada hueso de la pierna, en tramos a lo largo de él y en sectores de 30° alrededor, se toma la superficie más interior de todo lo que no es pelo. Lo que sobresale de ella menos del 3.5 % de la pierna es ceñido; lo que sobresale más del 7 %, suelto. Se mide desde la superficie y no desde el hueso porque el hueso no tiene por qué ir centrado en la pierna.
+  2. Lo que está por debajo del tobillo es siempre ceñido (calzado).
+  3. Filtro de mayoría sobre la malla, para que la frontera quede limpia.
+  4. Una zona ceñida solo sigue con la pierna si da la vuelta a su propio centro (8 de 12 sectores en algún tramo), como unas medias. Si no la da, es un trozo de abrigo que roza el muslo, y cuelga.
+  5. Voto por capa: si el 60 % de una capa está de un lado, la capa entera pasa a ese lado.
+- **Pesos:** lo ceñido conserva los pesos del rig y lo suelto pasa a sus cadenas.
+- **Cortes:** los triángulos entre lo ceñido y lo suelto se quedan del lado de la mayoría, con copias de los vértices del otro lado. Si no, se estirarían en láminas al separarse.
+- **Física:** la misma que el pelo, con cápsulas de muslos y espinillas, y un juego de valores propio ("Ropa:" en el panel).
+- **Exportación:** van a `VRMC_springBone` junto con el pelo.
+
+Resultado en la patada:
+- La morena: el abrigo cuelga y la pierna patea entera, con su media.
+- La rubia: el panel dorado de la sobrefalda se levanta sobre el muslo como una tabla. No se estira, pero queda rígido.
+- La de pelo turquesa: no tiene falda, así que no salen cadenas.
+
+Pendiente:
+- Que la tela se doble sobre la pierna en vez de levantarse rígida: haría falta una rejilla con enlaces laterales, como las telas de DOAX2 (`doax2_cloth.rs`).
+- En la de la motosierra, una pieza rígida de la pierna derecha (un objeto del rig) recibe cadenas de falda y se mueve con el viento.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

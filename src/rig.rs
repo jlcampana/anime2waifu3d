@@ -105,7 +105,7 @@ pub struct Report {
 /// Capas de ropa de cintura para abajo (faldas, abrigos largos, pantalones), por el nombre que
 /// les da la segmentación: nunca van con los huesos de los brazos, aunque cuelguen junto a las
 /// manos.
-fn lower_garment_layers(model: &Model) -> Vec<bool> {
+pub(crate) fn lower_garment_layers(model: &Model) -> Vec<bool> {
     model
         .layers
         .iter()

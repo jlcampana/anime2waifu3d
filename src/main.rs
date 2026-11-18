@@ -263,14 +263,20 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
             app.apply_pose();
         }
         if app.has_hair() {
-            ui.heading("Pelo");
-            if ui.checkbox(&mut app.hair_physics, "Física del pelo").changed() {
+            ui.heading("Pelo y ropa");
+            if ui.checkbox(&mut app.hair_physics, "Física del pelo y la ropa").changed() {
                 app.apply_pose();
             }
             let name = hair::PRESETS[app.hair_preset].0;
-            egui::ComboBox::from_id_salt("pelo").selected_text(name).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("pelo").selected_text(format!("Pelo: {name}")).show_ui(ui, |ui| {
                 for (i, (name, _)) in hair::PRESETS.iter().enumerate() {
                     ui.selectable_value(&mut app.hair_preset, i, *name);
+                }
+            });
+            let name = hair::PRESETS[app.cloth_preset].0;
+            egui::ComboBox::from_id_salt("ropa").selected_text(format!("Ropa: {name}")).show_ui(ui, |ui| {
+                for (i, (name, _)) in hair::PRESETS.iter().enumerate() {
+                    ui.selectable_value(&mut app.cloth_preset, i, *name);
                 }
             });
             ui.add(egui::Slider::new(&mut app.wind, 0.0..=1.0).text("Viento"));
@@ -446,6 +452,7 @@ fn run_rig(args: &[String]) -> anyhow::Result<()> {
         println!("{bone:<15} encaje {:.4} -> {:.4}", before, after);
     }
     print_hair(&hair::rig_hair(&mut model)?);
+    print_hair(&hair::rig_skirt(&mut model)?);
     export_glb::write(&model, std::path::Path::new(output))?;
     println!("-> {output} en {:.1} s", start.elapsed().as_secs_f32());
     Ok(())
@@ -457,12 +464,13 @@ fn print_hair(report: &hair::Report) {
     }
 }
 
-/// `anime2waifu3d hair ENTRADA.glb SALIDA.glb`: pone cadenas de pelo a un modelo ya riggeado
-/// (lo hace también `rig`).
+/// `anime2waifu3d hair ENTRADA.glb SALIDA.glb`: pone cadenas de pelo y de falda a un modelo ya
+/// riggeado (lo hace también `rig`).
 fn run_hair(args: &[String]) -> anyhow::Result<()> {
     let [input, output] = args else { anyhow::bail!("uso: hair ENTRADA.glb SALIDA.glb") };
     let mut model = model::Model::load(std::path::Path::new(input))?;
     print_hair(&hair::rig_hair(&mut model)?);
+    print_hair(&hair::rig_skirt(&mut model)?);
     export_glb::write(&model, std::path::Path::new(output))?;
     println!("-> {output}");
     Ok(())
