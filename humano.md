@@ -10,7 +10,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   ```bash
   cargo run --release -- assets/resultados/waifu016_80k.glb
   ```
-  Los cuatro modelos de prueba, ya riggeados, con pelo, falda y párpados, están en `assets/resultados/`:
+  Los cuatro modelos de prueba, ya riggeados, con pelo, falda, párpados y boca, están en `assets/resultados/`:
   - `waifu026_60k`: la de pelo turquesa.
   - `waifu016_80k`: la rubia de melena larga.
   - `waifu006_80k`: la morena del abrigo largo.
@@ -29,21 +29,35 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - oculta mechones (ojo, y Alt+clic para ver solo uno);
   - cambia su opacidad;
   - con un mechón seleccionado, cambia "Física:".
-- [ ] Mira las imágenes de resultados en `assets/resultados/`: `all_poses.png`, `v2.png`, `hair.gif` y `flequillo.gif`.
+- [ ] Mira las imágenes de resultados en `assets/resultados/`:
+  - `all_poses.png`;
+  - `v2.png`;
+  - `hair.gif`;
+  - `flequillo.gif`;
+  - `falda_patada.png`;
+  - `falda_viento.png`;
+  - `expresiones.png`;
+  - `hablar.gif`.
 - [ ] Dime lo que veas mal o raro, con el modelo, la pose o la animación, y la zona. Si puedes, añade una captura.
 
 ## 2. Decisiones que necesito
 
-- [ ] **Siguiente bloque grande.** Elige el orden:
-  - **Falda y abrigo con física de tela:** en la patada el faldón sigue a la pierna. Es mi recomendación y lo empiezo ya.
-  - [x] **Cara animable:** elegiste geometría de párpados. Ya están el parpadeo, el guiño y los ojos felices (^^). Queda la boca.
-  - **Formato de proyecto:** guardar y abrir con capas, visibilidad, opacidad y física por capa.
-  - **Ruta desde imagen:** imagen de anime → modelo, con quitar el fondo y ajustar Base_Female a la silueta.
+- [x] **Siguiente bloque grande.** Lo que has decidido:
+  - [x] **Falda y abrigo con física de tela:** hecho.
+  - [x] **Cara animable:** elegiste geometría de párpados. Hecho: parpadeo, guiño, ojos felices (^^) y boca con vocales.
+  - [x] **Formato de proyecto:** elegido el 2026-11-18; en curso.
+  - [ ] **Ruta desde imagen:** imagen de anime → modelo, con quitar el fondo y ajustar Base_Female a la silueta. Pendiente: dime cuándo.
 - [ ] **VRM Add-on de Blender.** Para comprobar que la física del pelo exportada (`VRMC_springBone`) funciona fuera de la app hace falta instalar el add-on oficial "VRM Add-on for Blender", que es gratuito. Tienes dos opciones:
   - darme permiso para descargarlo e instalarlo en la carpeta aislada de Blender, sin tocar tu configuración;
   - instalarlo tú en tu Blender e importar un `.glb` de `assets/resultados/`.
 - [ ] **Unir la rama a `main`.** Todo está en la rama `visor-y-segmentacion` (GitHub `jlcampana/anime2waifu3d`). ¿Abro un PR y lo unes cuando lo hayas probado?
-- [ ] **El modelo de la motosierra** necesita marcar la motosierra a mano (`--prop`), porque la segmentación confunde el metal con pelo. ¿Lo dejamos así hasta tener la paleta completa, donde se marcará con un clic, o es prioritario?
+- [ ] **El modelo de la motosierra:**
+  - necesita marcar la motosierra a mano (`--prop`), porque la segmentación confunde el metal con pelo;
+  - tiene la cabeza girada y se queda sin párpados ni boca;
+  - una pieza rígida de su pierna derecha recibe física de falda.
+
+  ¿Lo dejamos así hasta tener la paleta completa, donde se marcará con un clic, o es prioritario?
+- [ ] **Sonreír sin abrir la boca.** La boca pintada no se puede curvar con geometría. Para una sonrisa cerrada habría que cambiar la textura de la boca. ¿Te interesa?
 
 ## 3. Material que necesito
 
