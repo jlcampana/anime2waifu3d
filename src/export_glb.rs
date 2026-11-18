@@ -189,6 +189,10 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
             "meta": { "name": model.name, "authors": ["anime2waifu3d"], "licenseUrl": "https://vrm.dev/licenses/1.0/" },
             "humanoid": { "humanBones": human },
         }});
+        if let Some(hair) = crate::hair::HairSim::new(model) {
+            document["extensionsUsed"] = json!(["VRMC_vrm", "VRMC_springBone"]);
+            document["extensions"]["VRMC_springBone"] = hair.spring_bone_extension(skeleton);
+        }
     }
     if !images.is_empty() {
         document["images"] = json!(images);

@@ -126,9 +126,19 @@ Implementado en `src/hair.rs`. Lo ejecuta `rig` al final, y también `anime2waif
   - En "Pelo": casilla de física, juego de valores ("normal", "suelto", "rígido") y deslizador de viento.
   - Por línea de comandos, `--wind 0..1` y `--no-hair`. Las capturas asientan el pelo primero, con 120 pasos.
 
+- **Flequillo.**
+  - La raíz sube por delante desde las sienes hasta la frente (80 % de la cabeza), con una transición suave según el ángulo.
+  - Los mechones de delante tienen sus propias cadenas cortas, con nombre "flequillo …".
+  - El pelo que está a menos de 0.02 a 0.08 cabezas de la piel de la cabeza se queda con la cabeza, con transición suave. Así no se arrancan trozos de cara que la segmentación metió en el pelo.
+- **`VRMC_springBone`.**
+  - `export_glb` escribe una cadena por mechón y los colisionadores (cápsulas y la esfera de la cabeza).
+  - Cada colisionador va en su propio grupo, y cada cadena solo usa los que no la tocan en reposo.
+  - Los valores son los habituales de VRoid: rigidez 1, arrastre 0.4 y gravedad 0.1.
+  - Blender importa el GLB con sus huesos. La física no está comprobada en un visor VRM.
+
 Pendiente:
-- Exportar `VRMC_springBone` para que la física funcione fuera de la app.
-- Separar el flequillo y la coronilla en mechones propios.
+- Comprobar la física exportada en un visor VRM o en Blender con el VRM Add-on.
+- Mechones propios para la coronilla.
 - Colisión de unos mechones con otros, y valores de física por capa.
 - Opacidad animable.
 - Cadenas para coletas que no cuelgan hacia abajo; hoy todo se parametriza por altura.

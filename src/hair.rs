@@ -81,6 +81,7 @@ fn direction_name(theta: f32) -> &'static str {
 
 struct Chain {
     theta: f32,
+    root_y: f32,
     length: f32,
     joints: Vec<Vec3>,
     first_bone: usize,
@@ -129,11 +130,17 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
     let top = points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
     let head_height = (top - head_pos.y).max(0.05);
     // La raíz de los mechones, a la altura de las sienes.
-    let root_y = head_pos.y + 0.45 * head_height;
+    // Por delante sube hasta la frente, para que el flequillo tenga sus propias cadenas.
+    let side_root = head_pos.y + 0.45 * head_height;
+    let front_root = head_pos.y + 0.8 * head_height;
+    let root_at = |theta: f32| {
+        let f = ((theta.cos() - 0.3) / 0.5).clamp(0.0, 1.0);
+        side_root + (front_root - side_root) * f * f * (3.0 - 2.0 * f)
+    };
     let segment_length = 0.3 * head_height;
 
     // Sectores con bastante pelo colgando, y su ángulo medio.
-    let hanging: Vec<Vec3> = points.iter().copied().filter(|p| p.y < root_y - segment_length).collect();
+    let hanging: Vec<Vec3> = points.iter().copied().filter(|p| p.y < root_at(azimuth(*p, head_pos)) - 0.5 * segment_length).collect();
     let mut bins: Vec<Vec<Vec3>> = vec![Vec::new(); SECTORS];
     for p in &hanging {
         let t = azimuth(*p, head_pos).rem_euclid(std::f32::consts::TAU);
@@ -141,7 +148,7 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
     }
     let mut chains: Vec<Chain> = Vec::new();
     for bin in &bins {
-        if bin.len() < 30 || bin.len() * 40 < hanging.len() {
+        if bin.len() < 30 || bin.len() * 80 < hanging.len() {
             continue;
         }
         let (s, c) = bin.iter().fold((0.0, 0.0), |(s, c), p| {
@@ -149,11 +156,12 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
             (s + t.sin(), c + t.cos())
         });
         let theta = s.atan2(c);
+        let root_y = root_at(theta);
         let bottom = bin.iter().map(|p| p.y).fold(f32::MAX, f32::min);
         let extent = root_y - bottom;
         let segments = ((extent / segment_length).ceil() as usize).clamp(2, MAX_SEGMENTS);
         let length = extent / segments as f32;
-        chains.push(Chain { theta, length, joints: Vec::new(), first_bone: 0 });
+        chains.push(Chain { theta, root_y, length, joints: Vec::new(), first_bone: 0 });
     }
     if chains.is_empty() {
         return Ok(Report { strands: Vec::new() });
@@ -178,6 +186,7 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
     let owner: Vec<usize> = points.iter().map(|p| nearest_two(azimuth(*p, head_pos))[0].0).collect();
     for (c, chain) in chains.iter_mut().enumerate() {
         let mine: Vec<Vec3> = points.iter().zip(&owner).filter(|(_, o)| **o == c).map(|(p, _)| *p).collect();
+        let root_y = chain.root_y;
         let segments = ((root_y - mine.iter().map(|p| p.y).fold(f32::MAX, f32::min)) / chain.length).round() as usize;
         let segments = segments.clamp(2, MAX_SEGMENTS);
         for k in 0..=segments {
@@ -205,7 +214,7 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
 
     // Huesos: cada articulación, hija de la anterior; la primera, de la cabeza.
     let mut report = Report { strands: Vec::new() };
-    let mut names: HashMap<&str, usize> = HashMap::new();
+    let mut names: HashMap<String, usize> = HashMap::new();
     let mut chain_names = Vec::new();
     for (c, chain) in chains.iter_mut().enumerate() {
         chain.first_bone = skeleton.bones.len();
@@ -217,14 +226,35 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
                 rest_world: Mat4::from_translation(*joint),
             });
         }
+        // Los de delante, con la raíz en la frente, son el flequillo.
+        let kind = if chain.theta.cos() > 0.5 { "flequillo" } else { "mechón" };
         let base = direction_name(chain.theta);
-        let count = names.entry(base).or_insert(0);
+        let label = format!("{kind} {base}");
+        let count = names.entry(label.clone()).or_insert(0);
         *count += 1;
-        chain_names.push(if *count > 1 { format!("mechón {base} {count}") } else { format!("mechón {base}") });
+        chain_names.push(if *count > 1 { format!("{label} {count}") } else { label });
     }
 
     // Pesos: los dos mechones más cercanos por ángulo y, en cada uno, los dos segmentos por
     // altura.
+    // La piel de la cabeza (lo que no es pelo y va con la cabeza): el pelo pegado a ella, como
+    // trozos de cara que la segmentación dejó en el pelo o mechones pintados sobre la frente,
+    // se queda con la cabeza.
+    let mut face: Vec<Vec3> = Vec::new();
+    for (l, layer) in model.layers.iter().enumerate() {
+        if hair[l] {
+            continue;
+        }
+        for p in &layer.primitives {
+            for (v, (j, w)) in p.vertices.iter().zip(p.joints.iter().zip(&p.weights)) {
+                if j[0] as usize == head && w[0] > 0.5 {
+                    face.push(Vec3::from(v.position));
+                }
+            }
+        }
+    }
+    let (glued, free) = (0.02 * head_height, 0.08 * head_height);
+    let face = crate::rig::Grid::new(face, free);
     let weights_at = |p: Vec3| -> ([u16; 4], [f32; 4], usize) {
         let mut acc: Vec<(usize, f32)> = Vec::new();
         let near = nearest_two(azimuth(p, head_pos));
@@ -232,11 +262,21 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
             if wc <= 0.0 {
                 continue;
             }
-            for (bone, w) in chains[c].weights(p.y, root_y, head) {
+            for (bone, w) in chains[c].weights(p.y, chains[c].root_y, head) {
                 match acc.iter_mut().find(|(b, _)| *b == bone) {
                     Some(e) => e.1 += w * wc,
                     None => acc.push((bone, w * wc)),
                 }
+            }
+        }
+        let d = face.nearest_within(p, free);
+        let f = ((d - glued) / (free - glued)).clamp(0.0, 1.0);
+        let pin = 1.0 - f * f * (3.0 - 2.0 * f);
+        if pin > 0.0 {
+            acc.iter_mut().for_each(|e| e.1 *= 1.0 - pin);
+            match acc.iter_mut().find(|(b, _)| *b == head) {
+                Some(e) => e.1 += pin,
+                None => acc.push((head, pin)),
             }
         }
         acc.retain(|(_, w)| *w > 1e-4);
@@ -279,11 +319,9 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
                 let (nj, nw, owner) = weights_at(p);
                 primitive.joints[i] = nj;
                 primitive.weights[i] = nw;
-                vertex_group[i] = if p.y < root_y {
+                vertex_group[i] = if p.y < chains[owner].root_y {
                     counts[owner] += 1;
                     3 + owner
-                } else if azimuth(p, head_pos).abs() < 1.0 && p.y < head_pos.y + 0.85 * head_height {
-                    1
                 } else {
                     0
                 };
@@ -580,6 +618,52 @@ impl HairSim {
         }
     }
 
+    /// La física como extensión `VRMC_springBone` de VRM 1.0, para Blender (VRM Add-on) y los
+    /// visores VRM. Los nodos son los índices de los huesos (`export_glb` los escribe primero).
+    /// Cada colisionador lleva el radio más pequeño que le dan las cadenas, para que ninguna
+    /// punta en reposo quede dentro. Rigidez, arrastre y gravedad son valores habituales de
+    /// VRoid para pelo largo, no una conversión de los de `HairParams`, que siguen otra fórmula.
+    pub fn spring_bone_extension(&self, skeleton: &Skeleton) -> serde_json::Value {
+        use serde_json::json;
+        let local = |bone: usize, world: Vec3| skeleton.bones[bone].rest_world.inverse().transform_point3(world).to_array();
+        let colliders: Vec<serde_json::Value> = self
+            .colliders
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let radius = c.radius;
+                let _ = i;
+                let centre = skeleton.rest_position(c.a) + c.offset;
+                let shape = match c.b {
+                    Some(b) => json!({ "capsule": { "offset": local(c.a, centre), "radius": radius, "tail": local(c.a, skeleton.rest_position(b)) } }),
+                    None => json!({ "sphere": { "offset": local(c.a, centre), "radius": radius } }),
+                };
+                json!({ "node": c.a, "shape": shape })
+            })
+            .collect();
+        let springs: Vec<serde_json::Value> = self
+            .chains
+            .iter()
+            .map(|chain| {
+                let joints: Vec<serde_json::Value> = chain
+                    .bones
+                    .iter()
+                    .map(|b| json!({ "node": b, "hitRadius": 0.02, "stiffness": 1.0, "gravityPower": 0.1, "gravityDir": [0.0, -1.0, 0.0], "dragForce": 0.4 }))
+                    .collect();
+                let name = skeleton.bones[chain.bones[0]].name.trim_end_matches("_01").to_string();
+                // Solo los colisionadores que no tocan la cadena en reposo.
+                let groups: Vec<usize> = (0..self.colliders.len()).filter(|i| chain.radii[*i] >= 0.95 * self.colliders[*i].radius).collect();
+                json!({ "name": name, "joints": joints, "colliderGroups": groups })
+            })
+            .collect();
+        json!({
+            "specVersion": "1.0",
+            "colliders": colliders,
+            "colliderGroups": (0..self.colliders.len()).map(|i| json!({ "name": skeleton.bones[self.colliders[i].a].name, "colliders": [i] })).collect::<Vec<_>>(),
+            "springs": springs,
+        })
+    }
+
     pub fn reset(&mut self) {
         self.ready = false;
     }
@@ -591,7 +675,7 @@ mod tests {
 
     #[test]
     fn strand_weights_go_from_head_to_the_tip() {
-        let chain = Chain { theta: 0.0, length: 0.1, joints: vec![Vec3::ZERO; 5], first_bone: 10 };
+        let chain = Chain { theta: 0.0, root_y: 1.0, length: 0.1, joints: vec![Vec3::ZERO; 5], first_bone: 10 };
         // Por encima de la raíz, la cabeza entera.
         assert_eq!(chain.weights(1.05, 1.0, 3)[0], (3, 1.0));
         // A un segmento y medio, mitad del primer hueso y mitad del segundo.

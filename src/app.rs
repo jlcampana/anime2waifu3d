@@ -163,7 +163,7 @@ impl App {
         let t = self.sim_time;
         let gust = 0.6 + 0.4 * (t * 1.3).sin() * (t * 0.47 + 1.0).sin();
         let height = self.model_height();
-        let wind = glam::Vec3::new(0.6, 0.0, -1.0).normalize() * self.wind * gust * height * 0.004;
+        let wind = glam::Vec3::new(0.6, 0.0, -1.0).normalize() * self.wind * gust * height * 0.0025;
         let params = crate::hair::PRESETS[self.hair_preset.min(crate::hair::PRESETS.len() - 1)].1;
         let (Some(model), Some(hair)) = (&self.model, &mut self.hair) else { return };
         let Some(skeleton) = &model.skeleton else { return };
