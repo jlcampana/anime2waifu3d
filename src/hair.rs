@@ -64,6 +64,11 @@ fn angle_diff(a: f32, b: f32) -> f32 {
     if d > std::f32::consts::PI { d - std::f32::consts::TAU } else { d }
 }
 
+/// Clave para soldar vértices en la misma posición (las costuras de UV los duplican).
+fn weld_key(p: Vec3) -> [i32; 3] {
+    (p * 1e4).round().as_ivec3().to_array()
+}
+
 /// Nombre de un mechón por su ángulo.
 fn direction_name(theta: f32) -> &'static str {
     let deg = theta.to_degrees();
@@ -81,18 +86,17 @@ fn direction_name(theta: f32) -> &'static str {
 
 struct Chain {
     theta: f32,
-    root_y: f32,
     length: f32,
     joints: Vec<Vec3>,
     first_bone: usize,
 }
 
 impl Chain {
-    /// Huesos y pesos de un punto de este mechón por su altura: la cabeza por encima de la raíz,
-    /// y de ahí hacia abajo pasa de un segmento al siguiente.
-    fn weights(&self, y: f32, root_y: f32, head: usize) -> [(usize, f32); 2] {
+    /// Huesos y pesos de un punto de este mechón por su distancia a la raíz por la malla: la
+    /// cabeza en la raíz, y de ahí hacia la punta pasa de un segmento al siguiente.
+    fn weights(&self, distance: f32, head: usize) -> [(usize, f32); 2] {
         let segments = self.joints.len() - 1;
-        let j = ((root_y - y) / self.length - 1.0).clamp(-1.0, segments as f32 - 1.0);
+        let j = (distance / self.length - 1.0).clamp(-1.0, segments as f32 - 1.0);
         let low = j.floor();
         let frac = j - low;
         let bone = |i: f32| if i < 0.0 { head } else { self.first_bone + i as usize };
@@ -109,17 +113,40 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
     let head = skeleton.bone("head").context("el esqueleto no tiene cabeza")?;
     let head_pos = skeleton.rest_position(head);
 
-    // Vértices de pelo que van enteros con la cabeza (los de objetos marcados no).
+    // Vértices de pelo que van enteros con la cabeza (los de objetos marcados no), soldados por
+    // posición, y las aristas entre ellos.
     let is_head_only = |j: &[u16; 4], w: &[f32; 4]| j[0] as usize == head && w[0] > 0.999;
     let mut points: Vec<Vec3> = Vec::new();
+    let mut node_of: HashMap<[i32; 3], usize> = HashMap::new();
+    let mut edges: Vec<Vec<usize>> = Vec::new();
     for (l, layer) in model.layers.iter().enumerate() {
         if !hair[l] {
             continue;
         }
         for p in &layer.primitives {
-            for (v, (j, w)) in p.vertices.iter().zip(p.joints.iter().zip(&p.weights)) {
-                if is_head_only(j, w) {
-                    points.push(Vec3::from(v.position));
+            let nodes: Vec<Option<usize>> = p
+                .vertices
+                .iter()
+                .zip(p.joints.iter().zip(&p.weights))
+                .map(|(v, (j, w))| {
+                    is_head_only(j, w).then(|| {
+                        let position = Vec3::from(v.position);
+                        *node_of.entry(weld_key(position)).or_insert_with(|| {
+                            points.push(position);
+                            edges.push(Vec::new());
+                            points.len() - 1
+                        })
+                    })
+                })
+                .collect();
+            for tri in p.indices.chunks_exact(3) {
+                for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                    if let (Some(a), Some(b)) = (nodes[a as usize], nodes[b as usize]) {
+                        if a != b && !edges[a].contains(&b) {
+                            edges[a].push(b);
+                            edges[b].push(a);
+                        }
+                    }
                 }
             }
         }
@@ -129,8 +156,8 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
     }
     let top = points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
     let head_height = (top - head_pos.y).max(0.05);
-    // La raíz de los mechones, a la altura de las sienes.
-    // Por delante sube hasta la frente, para que el flequillo tenga sus propias cadenas.
+    // La raíz de los mechones, a la altura de las sienes. Por delante sube hasta la frente, para
+    // que el flequillo tenga sus propias cadenas.
     let side_root = head_pos.y + 0.45 * head_height;
     let front_root = head_pos.y + 0.8 * head_height;
     let root_at = |theta: f32| {
@@ -139,29 +166,55 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
     };
     let segment_length = 0.3 * head_height;
 
+    // Distancia de cada punto a la raíz por la malla (Dijkstra desde todo lo que está por encima
+    // de la raíz): sigue a las coletas y a los mechones que salen de lado o se curvan. Las
+    // piezas sueltas que no llegan a la raíz usan la altura bajo ella.
+    let mut distance: Vec<f32> = vec![f32::INFINITY; points.len()];
+    let mut queue = std::collections::BinaryHeap::new();
+    for (i, p) in points.iter().enumerate() {
+        if p.y >= root_at(azimuth(*p, head_pos)) {
+            distance[i] = 0.0;
+            queue.push(std::cmp::Reverse((0u32, i)));
+        }
+    }
+    while let Some(std::cmp::Reverse((d, i))) = queue.pop() {
+        let d = f32::from_bits(d);
+        if d > distance[i] {
+            continue;
+        }
+        for &n in &edges[i] {
+            let nd = d + points[i].distance(points[n]);
+            if nd < distance[n] {
+                distance[n] = nd;
+                // Los f32 positivos se ordenan igual que sus bits.
+                queue.push(std::cmp::Reverse((nd.to_bits(), n)));
+            }
+        }
+    }
+    for (i, p) in points.iter().enumerate() {
+        if !distance[i].is_finite() {
+            distance[i] = (root_at(azimuth(*p, head_pos)) - p.y).max(0.0);
+        }
+    }
+    let distance_at = |p: Vec3| node_of.get(&weld_key(p)).map_or(0.0, |&i| distance[i]);
+
     // Sectores con bastante pelo colgando, y su ángulo medio.
-    let hanging: Vec<Vec3> = points.iter().copied().filter(|p| p.y < root_at(azimuth(*p, head_pos)) - 0.5 * segment_length).collect();
-    let mut bins: Vec<Vec<Vec3>> = vec![Vec::new(); SECTORS];
-    for p in &hanging {
-        let t = azimuth(*p, head_pos).rem_euclid(std::f32::consts::TAU);
-        bins[(t / std::f32::consts::TAU * SECTORS as f32) as usize % SECTORS].push(*p);
+    let hanging: Vec<usize> = (0..points.len()).filter(|&i| distance[i] > 0.5 * segment_length).collect();
+    let mut bins: Vec<Vec<usize>> = vec![Vec::new(); SECTORS];
+    for &i in &hanging {
+        let t = azimuth(points[i], head_pos).rem_euclid(std::f32::consts::TAU);
+        bins[(t / std::f32::consts::TAU * SECTORS as f32) as usize % SECTORS].push(i);
     }
     let mut chains: Vec<Chain> = Vec::new();
     for bin in &bins {
         if bin.len() < 30 || bin.len() * 80 < hanging.len() {
             continue;
         }
-        let (s, c) = bin.iter().fold((0.0, 0.0), |(s, c), p| {
-            let t = azimuth(*p, head_pos);
+        let (s, c) = bin.iter().fold((0.0, 0.0), |(s, c), &i| {
+            let t = azimuth(points[i], head_pos);
             (s + t.sin(), c + t.cos())
         });
-        let theta = s.atan2(c);
-        let root_y = root_at(theta);
-        let bottom = bin.iter().map(|p| p.y).fold(f32::MAX, f32::min);
-        let extent = root_y - bottom;
-        let segments = ((extent / segment_length).ceil() as usize).clamp(2, MAX_SEGMENTS);
-        let length = extent / segments as f32;
-        chains.push(Chain { theta, root_y, length, joints: Vec::new(), first_bone: 0 });
+        chains.push(Chain { theta: s.atan2(c), length: segment_length, joints: Vec::new(), first_bone: 0 });
     }
     if chains.is_empty() {
         return Ok(Report { strands: Vec::new() });
@@ -181,21 +234,21 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
         }
     };
 
-    // Articulaciones: el centro del mechón en cada nivel. Los puntos de cada mechón son los que
-    // tienen ese mechón como el más cercano.
+    // Articulaciones: el centro del mechón en cada nivel de distancia. Los puntos de cada mechón
+    // son los que lo tienen como el más cercano.
     let owner: Vec<usize> = points.iter().map(|p| nearest_two(azimuth(*p, head_pos))[0].0).collect();
     for (c, chain) in chains.iter_mut().enumerate() {
-        let mine: Vec<Vec3> = points.iter().zip(&owner).filter(|(_, o)| **o == c).map(|(p, _)| *p).collect();
-        let root_y = chain.root_y;
-        let segments = ((root_y - mine.iter().map(|p| p.y).fold(f32::MAX, f32::min)) / chain.length).round() as usize;
-        let segments = segments.clamp(2, MAX_SEGMENTS);
+        let mine: Vec<usize> = (0..points.len()).filter(|&i| owner[i] == c).collect();
+        let extent = mine.iter().map(|&i| distance[i]).fold(0.0, f32::max);
+        let segments = ((extent / segment_length).ceil() as usize).clamp(2, MAX_SEGMENTS);
+        chain.length = extent.max(segment_length) / segments as f32;
+        let half = chain.length * 0.5;
         for k in 0..=segments {
-            let level = root_y - k as f32 * chain.length;
-            let half = chain.length * 0.5;
+            let level = k as f32 * chain.length;
             let band: Vec<Vec3> = mine
                 .iter()
-                .copied()
-                .filter(|p| if k == segments { p.y < level + half } else { (p.y - level).abs() < half })
+                .filter(|&&i| if k == segments { distance[i] > level - half } else { (distance[i] - level).abs() < half })
+                .map(|&i| points[i])
                 .collect();
             let joint = if band.is_empty() {
                 match chain.joints.as_slice() {
@@ -204,9 +257,7 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
                     [] => head_pos + Vec3::new(chain.theta.sin(), 0.0, chain.theta.cos()) * 0.5 * head_height,
                 }
             } else {
-                let mut centre = band.iter().copied().sum::<Vec3>() / band.len() as f32;
-                centre.y = if k == segments { band.iter().map(|p| p.y).fold(f32::MAX, f32::min) } else { level };
-                centre
+                band.iter().copied().sum::<Vec3>() / band.len() as f32
             };
             chain.joints.push(joint);
         }
@@ -257,12 +308,13 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
     let face = crate::rig::Grid::new(face, free);
     let weights_at = |p: Vec3| -> ([u16; 4], [f32; 4], usize) {
         let mut acc: Vec<(usize, f32)> = Vec::new();
+        let along = distance_at(p);
         let near = nearest_two(azimuth(p, head_pos));
         for (c, wc) in near {
             if wc <= 0.0 {
                 continue;
             }
-            for (bone, w) in chains[c].weights(p.y, chains[c].root_y, head) {
+            for (bone, w) in chains[c].weights(along, head) {
                 match acc.iter_mut().find(|(b, _)| *b == bone) {
                     Some(e) => e.1 += w * wc,
                     None => acc.push((bone, w * wc)),
@@ -319,7 +371,7 @@ pub fn rig_hair(model: &mut Model) -> Result<Report> {
                 let (nj, nw, owner) = weights_at(p);
                 primitive.joints[i] = nj;
                 primitive.weights[i] = nw;
-                vertex_group[i] = if p.y < chains[owner].root_y {
+                vertex_group[i] = if distance_at(p) > 0.0 {
                     counts[owner] += 1;
                     3 + owner
                 } else {
@@ -396,8 +448,10 @@ pub struct HairParams {
 
 pub const PRESETS: &[(&str, HairParams)] = &[
     ("normal", HairParams { stiffness: 0.08, damping: 0.88, gravity: 0.5, max_angle: 1.2 }),
-    ("suelto", HairParams { stiffness: 0.035, damping: 0.93, gravity: 0.7, max_angle: 1.5 }),
+    ("suelto", HairParams { stiffness: 0.035, damping: 0.93, gravity: 0.7, max_angle: 1.2 }),
     ("rígido", HairParams { stiffness: 0.25, damping: 0.75, gravity: 0.2, max_angle: 0.6 }),
+    // Sin física: la forma de reposo, con la cabeza.
+    ("fijo", HairParams { stiffness: 1.0, damping: 0.0, gravity: 0.0, max_angle: 0.0 }),
 ];
 
 /// Cápsula de colisión entre dos huesos (o una esfera, si `b` es `None`), con su radio.
@@ -432,12 +486,25 @@ struct SimChain {
     radii: Vec<f32>,
     tips: Vec<Vec3>,
     previous: Vec<Vec3>,
+    /// Raíz en el último paso.
+    root: Vec3,
+    /// Capa (mechón) a la que mueve, y su juego de valores si no es el general.
+    pub layer: Option<usize>,
+    pub preset: Option<usize>,
+}
+
+/// Dos puntas de mechones distintos que en reposo están cerca: no se acercan más de `min`.
+struct Contact {
+    a: (usize, usize),
+    b: (usize, usize),
+    min: f32,
 }
 
 pub struct HairSim {
     head: usize,
     chains: Vec<SimChain>,
     colliders: Vec<Collider>,
+    contacts: Vec<Contact>,
     ready: bool,
     offset: Vec3,
     /// Lo que se movió la punta más rápida en el último paso.
@@ -539,15 +606,43 @@ impl HairSim {
                         c.radius.min(closest * 0.9)
                     })
                     .collect();
-                SimChain { bones, tips: joints[1..].to_vec(), previous: joints[1..].to_vec(), rest, radii }
+                // La capa con más vértices que mueve esta cadena.
+                let mut votes: HashMap<usize, usize> = HashMap::new();
+                for (l, layer) in model.layers.iter().enumerate() {
+                    for p in &layer.primitives {
+                        for (j, w) in p.joints.iter().zip(&p.weights) {
+                            let k = (0..4).max_by(|a, b| w[*a].total_cmp(&w[*b])).unwrap_or(0);
+                            if bones.contains(&(j[k] as usize)) {
+                                *votes.entry(l).or_default() += 1;
+                            }
+                        }
+                    }
+                }
+                let layer = votes.into_iter().max_by_key(|(l, n)| (*n, usize::MAX - l)).map(|(l, _)| l);
+                SimChain { bones, tips: joints[1..].to_vec(), previous: joints[1..].to_vec(), root: joints[0], rest, radii, layer, preset: None }
             })
-            .collect();
-        Some(Self { head, chains, colliders, ready: false, offset: Vec3::ZERO, motion: 0.0 })
+            .collect::<Vec<_>>();
+        // Contactos entre puntas de mechones distintos que en reposo están a menos de un
+        // segmento: el mechón de fuera no atraviesa al de dentro al moverse.
+        let mut contacts = Vec::new();
+        for a in 0..chains.len() {
+            for b in a + 1..chains.len() {
+                for (i, ta) in chains[a].tips.iter().enumerate() {
+                    for (j, tb) in chains[b].tips.iter().enumerate() {
+                        let d = ta.distance(*tb);
+                        if d < chains[a].rest[i].length().min(chains[b].rest[j].length()) {
+                            contacts.push(Contact { a: (a, i), b: (b, j), min: d * 0.7 });
+                        }
+                    }
+                }
+            }
+        }
+        Some(Self { head, chains, colliders, contacts, ready: false, offset: Vec3::ZERO, motion: 0.0 })
     }
 
     /// Un paso de 1/60 s. `skin` son las matrices de skinning de la pose (el pelo no influye
     /// en ellas) y `offset` un desplazamiento del cuerpo entero. `wind` es una fuerza por paso.
-    pub fn step(&mut self, skeleton: &Skeleton, skin: &[Mat4], offset: Vec3, params: &HairParams, wind: Vec3) {
+    pub fn step(&mut self, skeleton: &Skeleton, skin: &[Mat4], offset: Vec3, general: &HairParams, wind: Vec3) {
         let head = skin[self.head];
         let turn = Quat::from_mat3(&Mat3::from_mat4(head)).normalize();
         self.offset = offset;
@@ -556,7 +651,10 @@ impl HairSim {
         self.ready = true;
         let mut motion: f32 = 0.0;
         for chain in &mut self.chains {
+            let params = chain.preset.and_then(|i| PRESETS.get(i)).map_or(general, |p| &p.1);
+            let wind = if params.stiffness >= 1.0 { Vec3::ZERO } else { wind };
             let mut base = head.transform_point3(skeleton.rest_position(chain.bones[0])) + offset;
+            chain.root = base;
             for k in 0..chain.rest.len() {
                 let length = chain.rest[k].length();
                 let posed = turn * chain.rest[k];
@@ -593,6 +691,28 @@ impl HairSim {
                 chain.previous[k] = tip;
                 chain.tips[k] = new_tip;
                 base = new_tip;
+            }
+        }
+        // Los mechones se separan donde se acercan más de la cuenta, y cada cadena recupera
+        // después la longitud de sus segmentos desde la raíz.
+        if !self.contacts.is_empty() {
+            for contact in &self.contacts {
+                let (pa, pb) = (self.chains[contact.a.0].tips[contact.a.1], self.chains[contact.b.0].tips[contact.b.1]);
+                let d = pa.distance(pb);
+                if d < contact.min && d > 1e-6 {
+                    let push = (pb - pa) * ((contact.min - d) / d * 0.5);
+                    self.chains[contact.a.0].tips[contact.a.1] -= push;
+                    self.chains[contact.b.0].tips[contact.b.1] += push;
+                }
+            }
+            for chain in &mut self.chains {
+                let mut base = chain.root;
+                for k in 0..chain.rest.len() {
+                    let length = chain.rest[k].length();
+                    let segment = (chain.tips[k] - base).normalize_or(chain.rest[k] / length.max(1e-6)) * length;
+                    chain.tips[k] = base + segment;
+                    base = chain.tips[k];
+                }
             }
         }
         self.motion = motion;
@@ -664,6 +784,41 @@ impl HairSim {
         })
     }
 
+    /// Juego de valores propio de una capa (y de sus hijas, si es un grupo), o `None` para el
+    /// general.
+    pub fn set_layer_preset(&mut self, layers: &[Layer], layer: usize, preset: Option<usize>) {
+        for chain in &mut self.chains {
+            let mut l = chain.layer;
+            while let Some(i) = l {
+                if i == layer {
+                    chain.preset = preset;
+                    break;
+                }
+                l = layers.get(i).and_then(|x| x.parent);
+            }
+        }
+    }
+
+    /// El juego de valores de una capa si todas sus cadenas tienen el mismo, y si tiene cadenas.
+    pub fn layer_preset(&self, layers: &[Layer], layer: usize) -> Option<Option<usize>> {
+        let mut found: Option<Option<usize>> = None;
+        for chain in &self.chains {
+            let mut l = chain.layer;
+            while let Some(i) = l {
+                if i == layer {
+                    match found {
+                        None => found = Some(chain.preset),
+                        Some(p) if p != chain.preset => return Some(None),
+                        _ => {}
+                    }
+                    break;
+                }
+                l = layers.get(i).and_then(|x| x.parent);
+            }
+        }
+        found
+    }
+
     pub fn reset(&mut self) {
         self.ready = false;
     }
@@ -675,15 +830,15 @@ mod tests {
 
     #[test]
     fn strand_weights_go_from_head_to_the_tip() {
-        let chain = Chain { theta: 0.0, root_y: 1.0, length: 0.1, joints: vec![Vec3::ZERO; 5], first_bone: 10 };
-        // Por encima de la raíz, la cabeza entera.
-        assert_eq!(chain.weights(1.05, 1.0, 3)[0], (3, 1.0));
-        // A un segmento y medio, mitad del primer hueso y mitad del segundo.
-        let w = chain.weights(0.85, 1.0, 3);
-        assert_eq!((w[0].0, w[1].0), (10, 11));
+        let chain = Chain { theta: 0.0, length: 0.1, joints: vec![Vec3::ZERO; 5], first_bone: 10 };
+        // En la raíz, la cabeza entera.
+        assert_eq!(chain.weights(0.0, 3)[0], (3, 1.0));
+        // A dos segmentos y medio, mitad del segundo hueso y mitad del tercero.
+        let w = chain.weights(0.15 + 0.1, 3);
+        assert_eq!((w[0].0, w[1].0), (11, 12));
         assert!((w[0].1 - 0.5).abs() < 1e-4 && (w[1].1 - 0.5).abs() < 1e-4);
         // Muy abajo, el último segmento.
-        assert_eq!(chain.weights(-5.0, 1.0, 3)[0].0, 13);
+        assert_eq!(chain.weights(5.0, 3)[0].0, 13);
     }
 
     #[test]

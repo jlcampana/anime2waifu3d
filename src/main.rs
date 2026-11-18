@@ -372,6 +372,23 @@ fn layers_panel(ui: &mut egui::Ui, app: &mut App, selected: &mut Option<usize>) 
         ui.label(&layer.name);
         ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).text("Opacidad"));
     }
+    // Física propia de un mechón (o de todos los de un grupo).
+    if let Some(index) = *selected {
+        if let Some(current) = app.hair_layer_preset(index) {
+            let mut choice = current;
+            egui::ComboBox::from_id_salt("fisica-capa")
+                .selected_text(format!("Física: {}", choice.map_or("general", |i| hair::PRESETS[i].0)))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, "general");
+                    for (i, (name, _)) in hair::PRESETS.iter().enumerate() {
+                        ui.selectable_value(&mut choice, Some(i), *name);
+                    }
+                });
+            if choice != current {
+                app.set_hair_layer_preset(index, choice);
+            }
+        }
+    }
 }
 
 /// `anime2waifu3d segment ENTRADA SALIDA.glb [--clusters N]`: separa una malla de una pieza en
@@ -481,7 +498,7 @@ fn main() {
             eprintln!("{error:#}");
             eprintln!(
                 "Uso: anime2waifu3d [modelo.glb|.gltf|.vrm] [--shot salida.png] [--size 1024x1024] \
-                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wind 0..1] [--no-hair] [--wire-overlay] [--no-grid]"
+                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wind 0..1] [--no-hair] [--hair-layer capa=valores] [--wire-overlay] [--no-grid]"
             );
             std::process::exit(2);
         }

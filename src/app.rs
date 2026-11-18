@@ -111,6 +111,18 @@ impl App {
         Ok(())
     }
 
+    /// Juego de valores de la física de una capa de pelo: `None` si no mueve ninguna cadena,
+    /// `Some(None)` si usa el general.
+    pub fn hair_layer_preset(&self, layer: usize) -> Option<Option<usize>> {
+        self.hair.as_ref()?.layer_preset(&self.model.as_ref()?.layers, layer)
+    }
+
+    pub fn set_hair_layer_preset(&mut self, layer: usize, preset: Option<usize>) {
+        if let (Some(hair), Some(model)) = (&mut self.hair, &self.model) {
+            hair.set_layer_preset(&model.layers, layer, preset);
+        }
+    }
+
     pub fn has_hair(&self) -> bool {
         self.hair.is_some()
     }
@@ -375,6 +387,8 @@ pub struct Options {
     /// Viento de 0 a 1 y física del pelo apagada.
     pub wind: Option<f32>,
     pub no_hair: bool,
+    /// Física propia de capas de pelo: (parte del nombre, juego de valores).
+    pub hair_layers: Vec<(String, String)>,
 }
 
 impl Options {
@@ -416,6 +430,11 @@ impl Options {
                 "--no-grid" => options.no_grid = true,
                 "--wind" => options.wind = Some(value()?.parse()?),
                 "--no-hair" => options.no_hair = true,
+                "--hair-layer" => {
+                    let v = value()?;
+                    let (layer, preset) = v.rsplit_once('=').ok_or_else(|| anyhow::anyhow!("--hair-layer es capa=valores"))?;
+                    options.hair_layers.push((layer.to_lowercase(), preset.to_string()));
+                }
                 _ if !arg.starts_with("--") && options.model.is_none() => options.model = Some(arg.into()),
                 _ => anyhow::bail!("argumento desconocido: {arg}"),
             }
@@ -437,6 +456,15 @@ impl Options {
             app.wind = wind;
         }
         app.hair_physics = !self.no_hair;
+        for (name, preset) in &self.hair_layers {
+            let preset = crate::hair::PRESETS.iter().position(|(n, _)| n == preset);
+            let layers: Vec<usize> = app.model.as_ref().map_or(Vec::new(), |m| {
+                m.layers.iter().enumerate().filter(|(_, l)| l.name.to_lowercase().contains(name.as_str())).map(|(i, _)| i).collect()
+            });
+            for layer in layers {
+                app.set_hair_layer_preset(layer, preset);
+            }
+        }
         if let Some(pose) = &self.pose {
             app.pose = pose.clone();
         }

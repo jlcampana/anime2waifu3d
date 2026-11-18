@@ -136,12 +136,24 @@ Implementado en `src/hair.rs`. Lo ejecuta `rig` al final, y también `anime2waif
   - Los valores son los habituales de VRoid: rigidez 1, arrastre 0.4 y gravedad 0.1.
   - Blender importa el GLB con sus huesos. La física no está comprobada en un visor VRM.
 
+- **Distancia por la malla** (2026-11-18).
+  - Los mechones ya no se parametrizan por altura, sino por la distancia a la raíz por la superficie del pelo.
+  - Se calcula con Dijkstra sobre los vértices soldados por posición, partiendo de todo lo que queda por encima de la raíz.
+  - Los niveles de las articulaciones y los pesos usan esa distancia, así que sirve para coletas y mechones que salen de lado o se curvan.
+  - Las piezas sueltas, que no llegan a la raíz, siguen usando la altura.
+- **Choque entre mechones.**
+  - Las puntas de mechones distintos que en reposo están a menos de un segmento no se acercan más del 70 % de esa distancia.
+  - Después, cada cadena recupera la longitud de sus segmentos desde la raíz.
+- **Física por capa.**
+  - Cada cadena sabe qué capa mueve: la que tiene más vértices con ella.
+  - En la paleta, al elegir un mechón o un grupo, se puede poner "general", "normal", "suelto", "rígido" o "fijo".
+  - Por línea de comandos: `--hair-layer "mechón detrás=fijo"`.
+
 Pendiente:
 - Comprobar la física exportada en un visor VRM o en Blender con el VRM Add-on.
-- Mechones propios para la coronilla.
-- Colisión de unos mechones con otros, y valores de física por capa.
+- Probar con un modelo con coletas: no hay ninguno entre los de prueba.
+- Guardar la física de cada capa en el proyecto y exportarla (hoy solo vive en el visor).
 - Opacidad animable.
-- Cadenas para coletas que no cuelgan hacia abajo; hoy todo se parametriza por altura.
 
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
