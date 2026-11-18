@@ -1,5 +1,6 @@
 mod app;
 mod export_glb;
+mod hair;
 mod lighting;
 mod model;
 mod physics;
@@ -261,6 +262,19 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
         if app.pose != before {
             app.apply_pose();
         }
+        if app.has_hair() {
+            ui.heading("Pelo");
+            if ui.checkbox(&mut app.hair_physics, "Física del pelo").changed() {
+                app.apply_pose();
+            }
+            let name = hair::PRESETS[app.hair_preset].0;
+            egui::ComboBox::from_id_salt("pelo").selected_text(name).show_ui(ui, |ui| {
+                for (i, (name, _)) in hair::PRESETS.iter().enumerate() {
+                    ui.selectable_value(&mut app.hair_preset, i, *name);
+                }
+            });
+            ui.add(egui::Slider::new(&mut app.wind, 0.0..=1.0).text("Viento"));
+        }
         ui.heading("Animación");
         egui::ComboBox::from_id_salt("animacion").selected_text(app.animation.as_str()).show_ui(ui, |ui| {
             for name in ["ninguna", "botar"] {
@@ -414,8 +428,26 @@ fn run_rig(args: &[String]) -> anyhow::Result<()> {
     for (bone, before, after) in &report.limbs {
         println!("{bone:<15} encaje {:.4} -> {:.4}", before, after);
     }
+    print_hair(&hair::rig_hair(&mut model)?);
     export_glb::write(&model, std::path::Path::new(output))?;
     println!("-> {output} en {:.1} s", start.elapsed().as_secs_f32());
+    Ok(())
+}
+
+fn print_hair(report: &hair::Report) {
+    for strand in &report.strands {
+        println!("{:<22} {} huesos, {} vértices", strand.name, strand.bones, strand.vertices);
+    }
+}
+
+/// `anime2waifu3d hair ENTRADA.glb SALIDA.glb`: pone cadenas de pelo a un modelo ya riggeado
+/// (lo hace también `rig`).
+fn run_hair(args: &[String]) -> anyhow::Result<()> {
+    let [input, output] = args else { anyhow::bail!("uso: hair ENTRADA.glb SALIDA.glb") };
+    let mut model = model::Model::load(std::path::Path::new(input))?;
+    print_hair(&hair::rig_hair(&mut model)?);
+    export_glb::write(&model, std::path::Path::new(output))?;
+    println!("-> {output}");
     Ok(())
 }
 
@@ -424,6 +456,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("rig") {
         if let Err(error) = run_rig(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("hair") {
+        if let Err(error) = run_hair(&args[1..]) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }
@@ -442,7 +481,7 @@ fn main() {
             eprintln!("{error:#}");
             eprintln!(
                 "Uso: anime2waifu3d [modelo.glb|.gltf|.vrm] [--shot salida.png] [--size 1024x1024] \
-                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wire-overlay] [--no-grid]"
+                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wind 0..1] [--no-hair] [--wire-overlay] [--no-grid]"
             );
             std::process::exit(2);
         }

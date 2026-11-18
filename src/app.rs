@@ -32,6 +32,13 @@ pub struct App {
     /// Juego de valores del muelle (ver `physics::PRESETS`).
     pub spring_preset: usize,
     springs: [crate::physics::BustSpring; 2],
+    /// Física del pelo (si el modelo tiene cadenas `J_Sec_Hair*`), su juego de valores y el
+    /// viento, de 0 a 1.
+    hair: Option<crate::hair::HairSim>,
+    pub hair_physics: bool,
+    pub hair_preset: usize,
+    pub wind: f32,
+    sim_time: f32,
     sim_accum: f32,
     pub status: String,
 }
@@ -63,6 +70,11 @@ impl App {
             bounce: 1.0,
             spring_preset: 0,
             springs: Default::default(),
+            hair: None,
+            hair_physics: true,
+            hair_preset: 0,
+            wind: 0.0,
+            sim_time: 0.0,
             sim_accum: 0.0,
             status: "Arrastra un modelo .glb, .gltf o .vrm a la ventana, o usa Abrir modelo".into(),
         }
@@ -92,27 +104,42 @@ impl App {
         if let Some(skeleton) = &model.skeleton {
             self.status += &format!(", {} huesos ({} humanoides)", skeleton.bones.len(), skeleton.humanoid.len());
         }
+        self.hair = crate::hair::HairSim::new(&model);
         self.model = Some(model);
-        self.apply_pose();
+        self.settle();
         self.frame(Shot::Full);
         Ok(())
     }
 
-    /// Deforma el modelo con la pose elegida (más la animación y el pecho) y sube los vértices
-    /// a la GPU.
-    pub fn apply_pose(&mut self) {
-        let Some(model) = &self.model else { return };
-        let Some(skeleton) = &model.skeleton else { return };
-        let Some(mut local) = crate::pose::preset(skeleton, &self.pose) else {
-            self.status = format!("Pose desconocida: {}", self.pose);
-            return;
-        };
+    pub fn has_hair(&self) -> bool {
+        self.hair.is_some()
+    }
+
+    /// Rotaciones locales de la pose elegida más el pecho, sin el pelo.
+    fn body_pose(&self) -> Option<Vec<glam::Quat>> {
+        let skeleton = self.model.as_ref()?.skeleton.as_ref()?;
+        let mut local = crate::pose::preset(skeleton, &self.pose)?;
         // Pecho: cada muelle gira su hueso hacia abajo o hacia arriba (eje X: el personaje mira
         // hacia +Z). x negativo es quedarse atrás al subir, es decir, hacia abajo.
         for (side, spring) in ["J_Sec_L_Bust1", "J_Sec_R_Bust1"].iter().zip(&self.springs) {
             if let Some(b) = skeleton.find(side) {
                 local[b] = glam::Quat::from_rotation_x(-spring.x * 0.35 * self.bounce) * local[b];
             }
+        }
+        Some(local)
+    }
+
+    /// Deforma el modelo con la pose elegida (más la animación, el pecho y el pelo) y sube los
+    /// vértices a la GPU.
+    pub fn apply_pose(&mut self) {
+        let Some(model) = &self.model else { return };
+        let Some(skeleton) = &model.skeleton else { return };
+        let Some(mut local) = self.body_pose() else {
+            self.status = format!("Pose desconocida: {}", self.pose);
+            return;
+        };
+        if let Some(hair) = self.hair.as_ref().filter(|_| self.hair_physics) {
+            hair.apply(skeleton, &mut local);
         }
         let mut vertices = crate::pose::skin_model(model, &local);
         let lift = self.body_offset();
@@ -126,6 +153,33 @@ impl App {
             }
         }
         self.scene.set_vertices(&self.ctx.queue, &vertices);
+    }
+
+    /// Un paso de 1/60 s del pelo con la pose actual.
+    fn step_hair(&mut self) {
+        let Some(local) = self.body_pose() else { return };
+        let offset = glam::Vec3::Y * self.body_offset();
+        // Viento racheado de lado y desde delante.
+        let t = self.sim_time;
+        let gust = 0.6 + 0.4 * (t * 1.3).sin() * (t * 0.47 + 1.0).sin();
+        let height = self.model_height();
+        let wind = glam::Vec3::new(0.6, 0.0, -1.0).normalize() * self.wind * gust * height * 0.004;
+        let params = crate::hair::PRESETS[self.hair_preset.min(crate::hair::PRESETS.len() - 1)].1;
+        let (Some(model), Some(hair)) = (&self.model, &mut self.hair) else { return };
+        let Some(skeleton) = &model.skeleton else { return };
+        let skin = crate::pose::skin_matrices(skeleton, &local);
+        hair.step(skeleton, &skin, offset, &params, wind);
+    }
+
+    /// Deja el pelo asentado en la pose actual (para cambiar de pose o hacer una captura).
+    pub fn settle(&mut self) {
+        if let Some(hair) = &mut self.hair {
+            hair.reset();
+        }
+        for _ in 0..120 {
+            self.step_hair();
+        }
+        self.apply_pose();
     }
 
     /// Altura del modelo, para escalar las animaciones.
@@ -145,7 +199,8 @@ impl App {
     /// Avanza la animación y la física `dt` segundos, en pasos fijos de 1/60 s.
     pub fn tick(&mut self, dt: f32) {
         let animated = self.animation != "ninguna";
-        if !animated && self.springs.iter().all(|s| s.x.abs() < 1e-4) {
+        let hair_active = self.hair_physics && self.hair.is_some();
+        if !animated && !hair_active && self.springs.iter().all(|s| s.x.abs() < 1e-4) {
             return;
         }
         let Some(chest_y) = self.model.as_ref().and_then(|m| m.skeleton.as_ref()).and_then(|s| s.bone("chest").map(|b| s.rest_position(b).y)) else {
@@ -158,12 +213,20 @@ impl App {
             if animated {
                 self.anim_time += 1.0 / 60.0;
             }
+            self.sim_time += 1.0 / 60.0;
             let y = chest_y + self.body_offset();
             for spring in &mut self.springs {
                 spring.step(&params, 1.0, y);
             }
+            if hair_active {
+                self.step_hair();
+            }
         }
-        self.apply_pose();
+        // Sin animación, solo se vuelve a deformar la malla si algo se mueve.
+        let moving = self.springs.iter().any(|s| s.x.abs() >= 1e-4) || self.hair.as_ref().is_some_and(|h| hair_active && h.motion > 1e-5);
+        if animated || moving {
+            self.apply_pose();
+        }
     }
 
     pub fn frame(&mut self, shot: Shot) {
@@ -309,6 +372,9 @@ pub struct Options {
     pub yaw: Option<f32>,
     pub wire_overlay: bool,
     pub no_grid: bool,
+    /// Viento de 0 a 1 y física del pelo apagada.
+    pub wind: Option<f32>,
+    pub no_hair: bool,
 }
 
 impl Options {
@@ -348,6 +414,8 @@ impl Options {
                 "--yaw" => options.yaw = Some(value()?.parse()?),
                 "--wire-overlay" => options.wire_overlay = true,
                 "--no-grid" => options.no_grid = true,
+                "--wind" => options.wind = Some(value()?.parse()?),
+                "--no-hair" => options.no_hair = true,
                 _ if !arg.starts_with("--") && options.model.is_none() => options.model = Some(arg.into()),
                 _ => anyhow::bail!("argumento desconocido: {arg}"),
             }
@@ -365,10 +433,14 @@ impl Options {
         if let Some(light) = self.light {
             app.light = light.min(PRESETS.len() - 1);
         }
+        if let Some(wind) = self.wind {
+            app.wind = wind;
+        }
+        app.hair_physics = !self.no_hair;
         if let Some(pose) = &self.pose {
             app.pose = pose.clone();
-            app.apply_pose();
         }
+        app.settle();
         if let Some(animation) = &self.animation {
             app.animation = animation.clone();
         }

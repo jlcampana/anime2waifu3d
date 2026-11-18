@@ -96,6 +96,43 @@ Modelo de datos:
 - **Orden de dibujo**: primero lo opaco; después las capas con alfa, de atrás adelante, por `orden`. Si hace falta, pasada previa de profundidad o mezcla ponderada (*weighted blended OIT*) para cuando las capas se crucen al moverse.
 - **Física por capa**: rigidez, gravedad y amortiguación por capa, con doble muelle (raíz rígida, punta suave, como en Anime2.5DRig) y colisionadores de cabeza, cuello y hombros.
 
+
+### Estado (2026-11-18): mechones con cadenas y física, primera versión
+
+Implementado en `src/hair.rs`. Lo ejecuta `rig` al final, y también `anime2waifu3d hair ENTRADA.glb SALIDA.glb` sobre un modelo ya riggeado.
+
+- **Mechones.**
+  - La raíz está a la altura de las sienes: la altura del hueso de la cabeza más el 45 % de lo que mide de ahí a la coronilla.
+  - El pelo que cuelga por debajo de la raíz se reparte en 12 sectores de 30° alrededor del eje de la cabeza. Cada sector con pelo suficiente es un mechón, que recibe su nombre por su lado: "mechón detrás izq", etc.
+- **Cadenas.**
+  - Cada mechón tiene una cadena `J_Sec_Hair{n}_{k}`, al estilo de VRoid, hija de la cabeza.
+  - Tiene entre 2 y 8 segmentos de unos 0.3 cabezas de largo. Cada articulación es el centro del mechón en su nivel de altura.
+- **Pesos.**
+  - Por altura: la cabeza por encima de la raíz; después, mezcla lineal entre segmentos consecutivos.
+  - Por ángulo: mezcla entre los dos mechones más cercanos, para que la malla no se rompa entre mechones.
+  - Los vértices de pelo de objetos marcados con `--prop` no se tocan.
+- **Capas.** Cada capa de pelo pasa a ser un grupo con un hijo por mechón, más "coronilla", "flequillo" y "resto". Así se pueden ocultar o volver transparentes por separado en la paleta, y se exportan como mallas separadas.
+- **Física (`HairSim`).**
+  - Puntas con integración Verlet a 60 Hz, cada segmento con su longitud fija, como en las cadenas de DOA3.
+  - Rigidez hacia la forma de reposo. Se usa una dirección de reposo por segmento sacada de la malla, en lugar de la dirección única con `bend` de DOA3.
+  - "Gravedad" como fracción de la dirección de reposo en el mundo que se mantiene cuando gira la cabeza.
+  - Ángulo máximo respecto al reposo.
+  - Viento racheado.
+- **Colisiones.**
+  - Cápsulas de tronco, cuello y brazos, y una esfera de cabeza.
+  - El radio de cada una es un percentil bajo de la distancia de los vértices del cuerpo a su hueso.
+  - En cada cadena, ese radio se reduce para que sus puntas en reposo queden fuera.
+- **Visor.**
+  - En "Pelo": casilla de física, juego de valores ("normal", "suelto", "rígido") y deslizador de viento.
+  - Por línea de comandos, `--wind 0..1` y `--no-hair`. Las capturas asientan el pelo primero, con 120 pasos.
+
+Pendiente:
+- Exportar `VRMC_springBone` para que la física funcione fuera de la app.
+- Separar el flequillo y la coronilla en mechones propios.
+- Colisión de unos mechones con otros, y valores de física por capa.
+- Opacidad animable.
+- Cadenas para coletas que no cuelgan hacia abajo; hoy todo se parametriza por altura.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

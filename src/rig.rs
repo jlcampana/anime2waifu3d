@@ -116,22 +116,6 @@ fn lower_garment_layers(model: &Model) -> Vec<bool> {
         .collect()
 }
 
-fn hair_layers(model: &Model) -> Vec<bool> {
-    let n = model.layers.len();
-    let mut hair = vec![false; n];
-    for i in 0..n {
-        let mut j = Some(i);
-        while let Some(k) = j {
-            if model.layers[k].name.eq_ignore_ascii_case("pelo") || model.layers[k].name.to_lowercase().starts_with("pelo ") {
-                hair[i] = true;
-                break;
-            }
-            j = model.layers[k].parent;
-        }
-    }
-    hair
-}
-
 /// Un objeto marcado a mano: capas (por nombre exacto) que van rígidas con un hueso humanoide.
 pub struct Prop {
     pub layers: Vec<String>,
@@ -140,7 +124,7 @@ pub struct Prop {
 
 pub fn rig(target: &mut Model, base: &Model, props: &[Prop]) -> Result<Report> {
     let base_skeleton = base.skeleton.as_ref().context("el modelo base no tiene esqueleto")?;
-    let hair = hair_layers(target);
+    let hair = crate::hair::hair_layers(target);
     let lower_garment = lower_garment_layers(target);
 
     // 1. Escala y centrado.
@@ -591,7 +575,7 @@ pub fn rig(target: &mut Model, base: &Model, props: &[Prop]) -> Result<Report> {
 
     // Depuración: con A2W_DEBUG_CHAIN=archivo.glb se escribe el objetivo partido por cadenas.
     if let Ok(path) = std::env::var("A2W_DEBUG_CHAIN") {
-        use crate::model::{Layer, Primitive};
+        use crate::model::Layer;
         let names = ["torso", "brazo izq", "brazo der", "pierna izq", "pierna der"];
         let mut layers: Vec<Layer> = names.iter().map(|n| Layer { name: n.to_string(), parent: None, depth: 0, primitives: Vec::new(), visible: true, opacity: 1.0, expanded: true }).collect();
         for (li, layer) in target.layers.iter().enumerate() {
