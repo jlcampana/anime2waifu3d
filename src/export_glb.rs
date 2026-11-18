@@ -96,8 +96,14 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
         accessors.push(json!({ "bufferView": view, "componentType": 5126, "count": bone_count, "type": "MAT4" }));
         skin_index = Some(json!({ "inverseBindMatrices": accessors.len() - 1, "joints": (0..bone_count).collect::<Vec<_>>() }));
     }
+    // Formas de cada capa, para las expresiones VRM: nombre -> (nodo, índice).
+    let mut expression_binds: Vec<(String, usize, usize)> = Vec::new();
     for layer in &model.layers {
         let mut node = json!({ "name": layer.name });
+        // Las primitivas de una malla glTF comparten las formas: solo si todas tienen las mismas.
+        let morph_names: Vec<String> = layer.primitives.first().map_or(Vec::new(), |p| p.morphs.iter().map(|m| m.name.clone()).collect());
+        let with_morphs = !morph_names.is_empty()
+            && layer.primitives.iter().all(|p| p.morphs.iter().map(|m| &m.name).eq(morph_names.iter()));
         if !layer.primitives.is_empty() {
             let mut primitives = Vec::new();
             for p in &layer.primitives {
@@ -133,9 +139,37 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
                     accessors.push(json!({ "bufferView": view, "componentType": 5126, "count": count, "type": "VEC4" }));
                     attributes["WEIGHTS_0"] = json!(accessors.len() - 1);
                 }
-                primitives.push(json!({ "attributes": attributes, "indices": idx, "material": p.material }));
+                let mut primitive = json!({ "attributes": attributes, "indices": idx, "material": p.material });
+                if with_morphs {
+                    let targets: Vec<Value> = p
+                        .morphs
+                        .iter()
+                        .map(|m| {
+                            let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
+                            for d in &m.deltas {
+                                for c in 0..3 {
+                                    min[c] = min[c].min(d[c]);
+                                    max[c] = max[c].max(d[c]);
+                                }
+                            }
+                            let view = push_view(&mut bin, bytemuck::cast_slice(&m.deltas), Some(34962));
+                            accessors.push(json!({ "bufferView": view, "componentType": 5126, "count": count, "type": "VEC3", "min": min, "max": max }));
+                            json!({ "POSITION": accessors.len() - 1 })
+                        })
+                        .collect();
+                    primitive["targets"] = json!(targets);
+                }
+                primitives.push(primitive);
             }
-            meshes.push(json!({ "name": layer.name, "primitives": primitives }));
+            let mut mesh = json!({ "name": layer.name, "primitives": primitives });
+            if with_morphs {
+                mesh["weights"] = json!(vec![0.0; morph_names.len()]);
+                mesh["extras"] = json!({ "targetNames": morph_names });
+                for (i, name) in morph_names.iter().enumerate() {
+                    expression_binds.push((name.clone(), nodes.len(), i));
+                }
+            }
+            meshes.push(mesh);
             node["mesh"] = json!(meshes.len() - 1);
             if skin_index.is_some() && layer.primitives.iter().any(|p| !p.joints.is_empty()) {
                 node["skin"] = json!(0);
@@ -189,6 +223,21 @@ pub fn write(model: &Model, path: &Path) -> Result<()> {
             "meta": { "name": model.name, "authors": ["anime2waifu3d"], "licenseUrl": "https://vrm.dev/licenses/1.0/" },
             "humanoid": { "humanBones": human },
         }});
+        // Expresiones VRM: las formas con nombre de una expresión predefinida.
+        let mut presets = serde_json::Map::new();
+        for name in ["blink", "blinkLeft", "blinkRight", "happy", "angry", "sad", "relaxed", "surprised", "aa", "ih", "ou", "ee", "oh"] {
+            let binds: Vec<Value> = expression_binds
+                .iter()
+                .filter(|(n, _, _)| n == name)
+                .map(|(_, node, index)| json!({ "node": node, "index": index, "weight": 1.0 }))
+                .collect();
+            if !binds.is_empty() {
+                presets.insert(name.to_string(), json!({ "morphTargetBinds": binds, "isBinary": false }));
+            }
+        }
+        if !presets.is_empty() {
+            document["extensions"]["VRMC_vrm"]["expressions"] = json!({ "preset": presets });
+        }
         if let Some(hair) = crate::hair::HairSim::new(model) {
             document["extensionsUsed"] = json!(["VRMC_vrm", "VRMC_springBone"]);
             document["extensions"]["VRMC_springBone"] = hair.spring_bone_extension(skeleton);

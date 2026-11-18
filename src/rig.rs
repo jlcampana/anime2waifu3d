@@ -350,7 +350,7 @@ pub fn rig(target: &mut Model, base: &Model, props: &[Prop]) -> Result<Report> {
         std::mem::swap(&mut debug.textures, &mut target.textures);
         std::mem::swap(&mut debug.layers, &mut target.layers);
         let material = debug.materials.len().saturating_sub(1);
-        debug.layers.push(Layer { name: "BASE AJUSTADA".into(), parent: None, depth: 0, primitives: vec![Primitive { vertices: tri_vertices, indices, material, joints: Vec::new(), weights: Vec::new() }], visible: true, opacity: 1.0, expanded: true });
+        debug.layers.push(Layer { name: "BASE AJUSTADA".into(), parent: None, depth: 0, primitives: vec![Primitive { vertices: tri_vertices, indices, material, joints: Vec::new(), weights: Vec::new(), morphs: Vec::new() }], visible: true, opacity: 1.0, expanded: true });
         let _ = crate::export_glb::write(&debug, std::path::Path::new(&path));
         debug.layers.pop();
         std::mem::swap(&mut debug.materials, &mut target.materials);

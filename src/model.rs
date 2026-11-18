@@ -24,6 +24,13 @@ pub struct Primitive {
     /// Huesos (índices en `Skeleton::bones`) y pesos de cada vértice; vacíos si no hay skin.
     pub joints: Vec<[u16; 4]>,
     pub weights: Vec<[f32; 4]>,
+    /// Formas (morph targets): desplazamiento de cada vértice, en el mundo en reposo.
+    pub morphs: Vec<Morph>,
+}
+
+pub struct Morph {
+    pub name: String,
+    pub deltas: Vec<[f32; 3]>,
 }
 
 impl Primitive {
@@ -31,6 +38,7 @@ impl Primitive {
     pub fn subset(&self, triangles: &[usize]) -> Primitive {
         let mut remap: HashMap<u32, u32> = HashMap::new();
         let (mut vertices, mut joints, mut weights) = (Vec::new(), Vec::new(), Vec::new());
+        let mut kept: Vec<u32> = Vec::new();
         let mut indices = Vec::with_capacity(triangles.len() * 3);
         let skinned = !self.joints.is_empty();
         for &t in triangles {
@@ -38,6 +46,7 @@ impl Primitive {
                 let old = self.indices[t * 3 + k];
                 let new = *remap.entry(old).or_insert_with(|| {
                     vertices.push(self.vertices[old as usize]);
+                    kept.push(old);
                     if skinned {
                         joints.push(self.joints[old as usize]);
                         weights.push(self.weights[old as usize]);
@@ -47,7 +56,12 @@ impl Primitive {
                 indices.push(new);
             }
         }
-        Primitive { vertices, indices, material: self.material, joints, weights }
+        let morphs = self
+            .morphs
+            .iter()
+            .map(|m| Morph { name: m.name.clone(), deltas: kept.iter().map(|&i| m.deltas[i as usize]).collect() })
+            .collect();
+        Primitive { vertices, indices, material: self.material, joints, weights, morphs }
     }
 }
 
@@ -434,6 +448,7 @@ fn read_primitive(primitive: &gltf::Primitive, node: &gltf::Node, world: Mat4, c
             .collect(),
         None => smooth_normals(&positions, &indices),
     };
+    let vertices_len = positions.len();
     let uvs: Vec<[f32; 2]> = match reader.read_tex_coords(0) {
         Some(t) => t.into_f32().collect(),
         None => vec![[0.0, 0.0]; positions.len()],
@@ -444,12 +459,34 @@ fn read_primitive(primitive: &gltf::Primitive, node: &gltf::Node, world: Mat4, c
         .zip(&uvs)
         .map(|((p, n), uv)| Vertex { position: p.to_array(), normal: n.to_array(), uv: *uv })
         .collect();
+    // Formas, con los nombres de `extras.targetNames` de la malla (como los escribe Blender).
+    let names: Vec<String> = node
+        .mesh()
+        .and_then(|m| m.extras().as_ref().and_then(|e| serde_json::from_str::<serde_json::Value>(e.get()).ok()))
+        .and_then(|e| e.get("targetNames").cloned())
+        .and_then(|n| serde_json::from_value(n).ok())
+        .unwrap_or_default();
+    let morphs = reader
+        .read_morph_targets()
+        .enumerate()
+        .filter_map(|(t, (positions, _, _))| {
+            let deltas = positions?
+                .enumerate()
+                .map(|(i, d)| {
+                    let m = if skinned { vertex_matrix[i] } else { world };
+                    m.transform_vector3(Vec3::from(d)).to_array()
+                })
+                .collect::<Vec<_>>();
+            (deltas.len() == vertices_len).then(|| Morph { name: names.get(t).cloned().unwrap_or_else(|| format!("forma {t}")), deltas })
+        })
+        .collect();
     Some(Primitive {
         vertices,
         indices,
         material: primitive.material().index().unwrap_or(context.default_material),
         joints,
         weights,
+        morphs,
     })
 }
 

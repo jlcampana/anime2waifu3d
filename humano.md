@@ -8,9 +8,9 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 
 - [ ] Abre la app con un modelo terminado:
   ```bash
-  cargo run --release -- assets/resultados/waifu016_80k.hair.glb
+  cargo run --release -- assets/resultados/waifu016_80k.glb
   ```
-  Los cuatro modelos de prueba, ya riggeados y con el pelo, están en `assets/resultados/`:
+  Los cuatro modelos de prueba, ya riggeados, con pelo, falda y párpados, están en `assets/resultados/`:
   - `waifu026_60k`: la de pelo turquesa.
   - `waifu016_80k`: la rubia de melena larga.
   - `waifu006_80k`: la morena del abrigo largo.
@@ -21,7 +21,8 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - pose;
   - animación "botar";
   - "Rebote del pecho";
-  - "Física del pelo", su juego de valores y "Viento";
+  - "Física del pelo y la ropa", sus juegos de valores y "Viento";
+  - en "Cara", las expresiones y el parpadeo automático;
   - los planos de cámara.
 - [ ] En la paleta de capas (derecha):
   - abre el grupo de pelo;
@@ -35,12 +36,12 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 
 - [ ] **Siguiente bloque grande.** Elige el orden:
   - **Falda y abrigo con física de tela:** en la patada el faldón sigue a la pierna. Es mi recomendación y lo empiezo ya.
-  - **Cara animable:** parpadeo, boca y expresiones kawaii. La cara de estas mallas está pintada en la textura, así que hay que elegir entre crear geometría de párpados o cambiar la textura de los ojos.
+  - [x] **Cara animable:** elegiste geometría de párpados. Ya están el parpadeo, el guiño y los ojos felices (^^). Queda la boca.
   - **Formato de proyecto:** guardar y abrir con capas, visibilidad, opacidad y física por capa.
   - **Ruta desde imagen:** imagen de anime → modelo, con quitar el fondo y ajustar Base_Female a la silueta.
 - [ ] **VRM Add-on de Blender.** Para comprobar que la física del pelo exportada (`VRMC_springBone`) funciona fuera de la app hace falta instalar el add-on oficial "VRM Add-on for Blender", que es gratuito. Tienes dos opciones:
   - darme permiso para descargarlo e instalarlo en la carpeta aislada de Blender, sin tocar tu configuración;
-  - instalarlo tú en tu Blender e importar un `.hair.glb` de `assets/resultados/`.
+  - instalarlo tú en tu Blender e importar un `.glb` de `assets/resultados/`.
 - [ ] **Unir la rama a `main`.** Todo está en la rama `visor-y-segmentacion` (GitHub `jlcampana/anime2waifu3d`). ¿Abro un PR y lo unes cuando lo hayas probado?
 - [ ] **El modelo de la motosierra** necesita marcar la motosierra a mano (`--prop`), porque la segmentación confunde el metal con pelo. ¿Lo dejamos así hasta tener la paleta completa, donde se marcará con un clic, o es prioritario?
 

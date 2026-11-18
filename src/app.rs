@@ -10,6 +10,9 @@ use crate::renderer::RenderContext;
 use anyhow::Result;
 use std::path::Path;
 
+/// Expresiones de la cara en el visor.
+pub const EXPRESSIONS: &[&str] = &["neutral", "parpadeo", "guiño izq", "guiño der", "feliz"];
+
 pub struct App {
     pub ctx: RenderContext,
     pub egui_ctx: egui::Context,
@@ -40,6 +43,9 @@ pub struct App {
     /// Juego de valores de la ropa (faldas y abrigos).
     pub cloth_preset: usize,
     pub wind: f32,
+    /// Expresión de la cara (ver `EXPRESSIONS`) y parpadeo automático.
+    pub expression: String,
+    pub auto_blink: bool,
     sim_time: f32,
     sim_accum: f32,
     pub status: String,
@@ -77,6 +83,8 @@ impl App {
             hair_preset: 0,
             cloth_preset: 0,
             wind: 0.0,
+            expression: "neutral".into(),
+            auto_blink: true,
             sim_time: 0.0,
             sim_accum: 0.0,
             status: "Arrastra un modelo .glb, .gltf o .vrm a la ventana, o usa Abrir modelo".into(),
@@ -126,6 +134,30 @@ impl App {
         }
     }
 
+    /// Si el modelo tiene párpados (la forma `blink`).
+    pub fn has_face(&self) -> bool {
+        self.model.as_ref().is_some_and(|m| m.layers.iter().any(|l| l.primitives.iter().any(|p| p.morphs.iter().any(|m| m.name == "blink"))))
+    }
+
+    /// Pesos de las formas de la cara: la expresión elegida y, en neutral, el parpadeo.
+    fn morph_weights(&self) -> Vec<(&'static str, f32)> {
+        let mut weights = match self.expression.as_str() {
+            "parpadeo" => vec![("blink", 1.0)],
+            "guiño izq" => vec![("blinkLeft", 1.0)],
+            "guiño der" => vec![("blinkRight", 1.0)],
+            "feliz" => vec![("happy", 1.0)],
+            _ => Vec::new(),
+        };
+        if self.auto_blink && weights.is_empty() {
+            // Un parpadeo de 0.18 s cada 3.7 s.
+            let t = self.sim_time % 3.7;
+            if t < 0.18 {
+                weights.push(("blink", 1.0 - (t - 0.09).abs() / 0.09));
+            }
+        }
+        weights
+    }
+
     pub fn has_hair(&self) -> bool {
         self.hair.is_some()
     }
@@ -156,7 +188,8 @@ impl App {
         if let Some(hair) = self.hair.as_ref().filter(|_| self.hair_physics) {
             hair.apply(skeleton, &mut local);
         }
-        let mut vertices = crate::pose::skin_model(model, &local);
+        let morphs = self.morph_weights();
+        let mut vertices = crate::pose::skin_model(model, &local, &morphs);
         let lift = self.body_offset();
         if lift != 0.0 {
             for layer in &mut vertices {
@@ -216,7 +249,8 @@ impl App {
     pub fn tick(&mut self, dt: f32) {
         let animated = self.animation != "ninguna";
         let hair_active = self.hair_physics && self.hair.is_some();
-        if !animated && !hair_active && self.springs.iter().all(|s| s.x.abs() < 1e-4) {
+        let blinking = self.auto_blink && self.expression == "neutral" && self.has_face();
+        if !animated && !hair_active && !blinking && self.springs.iter().all(|s| s.x.abs() < 1e-4) {
             return;
         }
         let Some(chest_y) = self.model.as_ref().and_then(|m| m.skeleton.as_ref()).and_then(|s| s.bone("chest").map(|b| s.rest_position(b).y)) else {
@@ -240,7 +274,7 @@ impl App {
         }
         // Sin animación, solo se vuelve a deformar la malla si algo se mueve.
         let moving = self.springs.iter().any(|s| s.x.abs() >= 1e-4) || self.hair.as_ref().is_some_and(|h| hair_active && h.motion > 1e-5);
-        if animated || moving {
+        if animated || moving || blinking {
             self.apply_pose();
         }
     }
@@ -391,6 +425,7 @@ pub struct Options {
     /// Viento de 0 a 1 y física del pelo apagada.
     pub wind: Option<f32>,
     pub no_hair: bool,
+    pub expression: Option<String>,
     /// Física propia de capas de pelo: (parte del nombre, juego de valores).
     pub hair_layers: Vec<(String, String)>,
 }
@@ -434,6 +469,7 @@ impl Options {
                 "--no-grid" => options.no_grid = true,
                 "--wind" => options.wind = Some(value()?.parse()?),
                 "--no-hair" => options.no_hair = true,
+                "--expression" => options.expression = Some(value()?),
                 "--hair-layer" => {
                     let v = value()?;
                     let (layer, preset) = v.rsplit_once('=').ok_or_else(|| anyhow::anyhow!("--hair-layer es capa=valores"))?;
@@ -460,6 +496,11 @@ impl Options {
             app.wind = wind;
         }
         app.hair_physics = !self.no_hair;
+        // En las capturas, sin parpadeo automático: la expresión que se pida, o ojos abiertos.
+        app.auto_blink = false;
+        if let Some(expression) = &self.expression {
+            app.expression = expression.clone();
+        }
         for (name, preset) in &self.hair_layers {
             let preset = crate::hair::PRESETS.iter().position(|(n, _)| n == preset);
             let layers: Vec<usize> = app.model.as_ref().map_or(Vec::new(), |m| {

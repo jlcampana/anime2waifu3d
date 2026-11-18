@@ -39,22 +39,39 @@ pub fn skin_matrices(skeleton: &Skeleton, local: &[Quat]) -> Vec<Mat4> {
         .collect()
 }
 
-pub fn skin_primitive(primitive: &Primitive, skin: &[Mat4]) -> Vec<Vertex> {
+/// Peso de cada forma (morph target) por su nombre; las que no están, a 0.
+pub type MorphWeights<'a> = &'a [(&'a str, f32)];
+
+pub fn skin_primitive(primitive: &Primitive, skin: &[Mat4], morphs: MorphWeights) -> Vec<Vertex> {
+    // Formas activas de esta primitiva.
+    let active: Vec<(&[[f32; 3]], f32)> = primitive
+        .morphs
+        .iter()
+        .filter_map(|m| morphs.iter().find(|(n, w)| *n == m.name && *w != 0.0).map(|(_, w)| (m.deltas.as_slice(), *w)))
+        .collect();
+    let rest = |i: usize, v: &Vertex| {
+        let mut p = Vec3::from(v.position);
+        for (deltas, w) in &active {
+            p += Vec3::from(deltas[i]) * *w;
+        }
+        p
+    };
     if primitive.joints.is_empty() {
-        return primitive.vertices.clone();
+        return primitive.vertices.iter().enumerate().map(|(i, v)| Vertex { position: rest(i, v).to_array(), ..*v }).collect();
     }
     primitive
         .vertices
         .iter()
+        .enumerate()
         .zip(primitive.joints.iter().zip(&primitive.weights))
-        .map(|(v, (j, w))| {
+        .map(|((i, v), (j, w))| {
             let mut m = Mat4::ZERO;
             for k in 0..4 {
                 if w[k] > 0.0 {
                     m += skin[j[k] as usize] * w[k];
                 }
             }
-            let p = m.transform_point3(Vec3::from(v.position));
+            let p = m.transform_point3(rest(i, v));
             let n = (Mat3::from_mat4(m) * Vec3::from(v.normal)).normalize_or_zero();
             Vertex { position: p.to_array(), normal: n.to_array(), uv: v.uv }
         })
@@ -62,12 +79,12 @@ pub fn skin_primitive(primitive: &Primitive, skin: &[Mat4]) -> Vec<Vertex> {
 }
 
 /// Vértices de cada primitiva de cada capa en la pose.
-pub fn skin_model(model: &Model, local: &[Quat]) -> Vec<Vec<Vec<Vertex>>> {
+pub fn skin_model(model: &Model, local: &[Quat], morphs: MorphWeights) -> Vec<Vec<Vec<Vertex>>> {
     let Some(skeleton) = &model.skeleton else {
         return model.layers.iter().map(|l| l.primitives.iter().map(|p| p.vertices.clone()).collect()).collect();
     };
     let skin = skin_matrices(skeleton, local);
-    model.layers.iter().map(|l| l.primitives.iter().map(|p| skin_primitive(p, &skin)).collect()).collect()
+    model.layers.iter().map(|l| l.primitives.iter().map(|p| skin_primitive(p, &skin, morphs)).collect()).collect()
 }
 
 /// Gira el hueso `bone` para que el segmento hacia su hijo `child` apunte en la dirección `dir`

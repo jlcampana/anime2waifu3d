@@ -1,5 +1,6 @@
 mod app;
 mod export_glb;
+mod face;
 mod hair;
 mod lighting;
 mod model;
@@ -262,6 +263,19 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
         if app.pose != before {
             app.apply_pose();
         }
+        if app.has_face() {
+            ui.heading("Cara");
+            let before = app.expression.clone();
+            egui::ComboBox::from_id_salt("expresion").selected_text(app.expression.as_str()).show_ui(ui, |ui| {
+                for name in app::EXPRESSIONS {
+                    ui.selectable_value(&mut app.expression, name.to_string(), *name);
+                }
+            });
+            let blink = ui.checkbox(&mut app.auto_blink, "Parpadeo automático").changed();
+            if app.expression != before || blink {
+                app.apply_pose();
+            }
+        }
         if app.has_hair() {
             ui.heading("Pelo y ropa");
             if ui.checkbox(&mut app.hair_physics, "Física del pelo y la ropa").changed() {
@@ -453,8 +467,45 @@ fn run_rig(args: &[String]) -> anyhow::Result<()> {
     }
     print_hair(&hair::rig_hair(&mut model)?);
     print_hair(&hair::rig_skirt(&mut model)?);
+    print_face(face::rig_face(&mut model));
     export_glb::write(&model, std::path::Path::new(output))?;
     println!("-> {output} en {:.1} s", start.elapsed().as_secs_f32());
+    Ok(())
+}
+
+/// Los párpados no son imprescindibles: si no se encuentran los ojos, se avisa y se sigue.
+fn print_face(report: anyhow::Result<face::Report>) {
+    match report {
+        Ok(r) => {
+            for eye in &r.eyes {
+                println!("ojo en ({:.3}, {:.3}), {:.3} x {:.3}", eye.centre.x, eye.centre.y, eye.radius.x * 2.0, eye.radius.y * 2.0);
+            }
+        }
+        Err(error) => println!("sin párpados: {error:#}"),
+    }
+}
+
+/// `anime2waifu3d face ENTRADA.glb SALIDA.glb [--debug cara.png]`: párpados para un modelo ya
+/// riggeado (lo hace también `rig`).
+fn run_face(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut debug = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--debug" {
+            debug = it.next().cloned();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: face ENTRADA.glb SALIDA.glb [--debug cara.png]") };
+    let mut model = model::Model::load(std::path::Path::new(input))?;
+    if let Some(path) = debug {
+        face::debug_image(&model, std::path::Path::new(&path))?;
+    }
+    print_face(face::rig_face(&mut model));
+    export_glb::write(&model, std::path::Path::new(output))?;
+    println!("-> {output}");
     Ok(())
 }
 
@@ -486,6 +537,13 @@ fn main() {
         }
         return;
     }
+    if args.first().map(String::as_str) == Some("face") {
+        if let Err(error) = run_face(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().map(String::as_str) == Some("hair") {
         if let Err(error) = run_hair(&args[1..]) {
             eprintln!("{error:#}");
@@ -506,7 +564,7 @@ fn main() {
             eprintln!("{error:#}");
             eprintln!(
                 "Uso: anime2waifu3d [modelo.glb|.gltf|.vrm] [--shot salida.png] [--size 1024x1024] \
-                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wind 0..1] [--no-hair] [--hair-layer capa=valores] [--wire-overlay] [--no-grid]"
+                 [--mode tex|solid|wire|layers] [--light N] [--camera N] [--hide nombre]... [--pose nombre] [--anim botar] [--frames N] [--fps F] [--bounce 0..3] [--wind 0..1] [--no-hair] [--hair-layer capa=valores] [--expression neutral|parpadeo|feliz…] [--wire-overlay] [--no-grid]"
             );
             std::process::exit(2);
         }

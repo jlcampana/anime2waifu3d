@@ -180,6 +180,37 @@ Pendiente:
 - Que la tela se doble sobre la pierna en vez de levantarse rígida: haría falta una rejilla con enlaces laterales, como las telas de DOAX2 (`doax2_cloth.rs`).
 - En la de la motosierra, una pieza rígida de la pierna derecha (un objeto del rig) recibe cadenas de falda y se mueve con el viento.
 
+## 6c. Cara: párpados de geometría (2026-11-18)
+
+Decisión del usuario: geometría de párpados, no cambiar la textura. Implementado en `src/face.rs` (`rig_face`); lo ejecutan `rig` y `anime2waifu3d face ENTRADA SALIDA [--debug cara.png]`.
+
+- **Ojos.** Los huesos de ojo heredados de Base_Female no sirven: tras el ajuste caen en la boca o en el cuello. Los ojos se buscan en la cara proyectada de frente:
+  1. Primero, la profundidad de la piel. Después, solo lo que está pegado a ella: así quedan fuera la melena de detrás y el flequillo que flota delante. El pelo que está prácticamente sobre la piel cuenta como pintado, porque a veces el iris tiene el color del pelo y la segmentación lo mete en esa capa.
+  2. Manchas lejanas al color de piel (ΔE > 30 en Lab), separadas donde solo las une una línea fina (erosión y crecimiento).
+  3. Se elige la mejor pareja de manchas: una a cada lado del centro de la piel, a la misma altura, en la franja de los ojos, con una separación razonable. Cada una debe tener forma de ojo (ni raya vertical ni ceja plana), estar en buena parte rodeada de piel y tener color (el iris).
+  4. Los dos ojos toman el tamaño del menor.
+- **Párpados.**
+  - Por ojo, un párpado superior y uno inferior: rejillas de 14×7 pegadas a la cara un poco por delante, con bordes redondeados y normales según la curva de la cara.
+  - Material color piel (pasado a lineal, como pide glTF) y una fila de pestañas del color más oscuro del contorno del ojo.
+  - Abiertos están plegados en su borde, sin área.
+  - Formas (morph targets): `blink`, `blinkLeft`, `blinkRight` (el párpado superior baja y deja un arco ‿) y `happy` (los dos párpados se encuentran en un arco ^^).
+- **Formato.**
+  - El modelo carga y guarda morph targets, con nombres en `extras.targetNames`.
+  - `VRMC_vrm.expressions.preset` enlaza `blink`, `blinkLeft`, `blinkRight` y `happy`.
+  - Blender los importa como shape keys.
+- **Visor.**
+  - Sección "Cara" con expresión (neutral, parpadeo, guiño izq/der, feliz) y parpadeo automático (0.18 s cada 3.7 s).
+  - Por línea de comandos, `--expression`.
+- **Resultado.**
+  - Bien en la rubia, la de pelo turquesa y la morena.
+  - La de la motosierra tiene la cabeza girada: no se encuentran dos ojos y se queda sin párpados, con un aviso.
+
+Pendiente:
+- Boca (abrir y sonreír) para las expresiones y para hablar (`aa`, `ih`, `ou`, `ee`, `oh`).
+- Cejas.
+- Caras de perfil o giradas.
+- Un ojo solo.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:
