@@ -367,7 +367,8 @@ El comando `imagen` hace ahora seis pasos: recorte, análisis, ajuste, pintura, 
   - Melena por detrás, que se mueve con el viento.
   - Falda azul con volumen.
   - Párpados y boca.
-  - Pendiente: la cortina de la espalda es rectangular; el brazo en jarra no se reproduce; la melena de los lados es poca, porque el mechón fino se clasifica mal.
+  - La cortina de la espalda ya no es un rectángulo: por debajo de los hombros no es más ancha que ellos, el bajo es redondeado (más largo en el centro) y las puntas son desiguales, como mechones.
+  - Pendiente: el brazo en jarra no se reproduce, y la melena de los lados es poca porque el mechón fino se clasifica mal.
 
 ## 6b. Muelles de pecho (bouncing), de doa.player
 

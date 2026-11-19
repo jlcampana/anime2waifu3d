@@ -457,3 +457,37 @@ pub fn project(model: &mut Model, image: &RgbaImage, analysis: &crate::analyze::
     ];
     Ok(projection)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn piecewise_interpolates_and_extends() {
+        let points = [(0.0, 0.0), (1.0, 2.0), (2.0, 3.0)];
+        assert!((piecewise(&points, 0.5) - 1.0).abs() < 1e-6);
+        assert!((piecewise(&points, 1.5) - 2.5).abs() < 1e-6);
+        // Fuera, con la pendiente del último tramo; `clamped`, sin salirse.
+        assert!((piecewise(&points, 3.0) - 4.0).abs() < 1e-6);
+        assert!((clamped(&points, 3.0) - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fill_keeps_the_drawing_and_paints_outside_from_inside() {
+        // Un cuadrado rojo con borde negro sobre fondo transparente.
+        let mut image = RgbaImage::new(40, 40);
+        for y in 10..30 {
+            for x in 10..30 {
+                let edge = x == 10 || x == 29 || y == 10 || y == 29;
+                image.put_pixel(x, y, image::Rgba(if edge { [0, 0, 0, 255] } else { [200, 0, 0, 255] }));
+            }
+        }
+        let keep: Vec<bool> = image.pixels().map(|p| p[3] > 128).collect();
+        let out = fill(&image, &keep);
+        // El dibujo sigue igual (también su borde negro)…
+        assert_eq!(out.get_pixel(10, 15)[0], 0);
+        assert_eq!(out.get_pixel(15, 15)[0], 200);
+        // …y fuera no se extiende el negro del borde, sino el rojo de dentro.
+        assert!(out.get_pixel(5, 15)[0] > 150, "{:?}", out.get_pixel(5, 15));
+    }
+}

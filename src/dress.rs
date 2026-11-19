@@ -293,11 +293,28 @@ pub fn add_hair(model: &mut Model, image: &RgbaImage, analysis: &Analysis, proje
     // (lo de detrás no se ve en la imagen).
     let head_rows = ((k.chin - k.top) as f32 / cell) as usize;
     let curtain_end = lowest_hair.filter(|l| *l >= shoulders_row).map_or(0, |l| l.max(shoulders_row + head_rows).min(crotch_row));
-    for r in chin_row..=curtain_end {
+    let span_at = |r: usize| -> Option<(usize, usize)> {
         let span: Vec<usize> = (0..columns).filter(|c| hair_cell[r * columns + c] || depth.at(*c, r).is_some()).collect();
-        let (Some(&hl), Some(&hr)) = (span.first(), span.last()) else { continue };
-        // No más ancho que los hombros más el pelo de los lados.
+        Some((*span.first()?, *span.last()?))
+    };
+    // Por debajo de los hombros el pelo cae recto: no más ancho que en los hombros.
+    let shoulders_span = span_at(shoulders_row);
+    let length = curtain_end.saturating_sub(shoulders_row) as f32;
+    for r in chin_row..=curtain_end {
+        let Some((mut hl, mut hr)) = span_at(r) else { continue };
+        if let (Some((sl, sr)), true) = (shoulders_span, r > shoulders_row) {
+            hl = hl.max(sl);
+            hr = hr.min(sr);
+        }
+        let (centre, half) = shoulders_span.map_or(((hl + hr) as f32 * 0.5, (hr - hl) as f32 * 0.5), |(sl, sr)| ((sl + sr) as f32 * 0.5, (sr - sl) as f32 * 0.5));
         for c in hl..=hr {
+            // Bajo redondeado (más largo en el centro) y puntas desiguales, como mechones.
+            let d = ((c as f32 - centre) / half.max(1.0)).min(1.0);
+            let jag = ((c * 7919) % 5) as f32 * 0.04 * length;
+            let end = curtain_end as f32 - 0.35 * length * d * d - jag;
+            if r as f32 > end {
+                continue;
+            }
             let back = |cc: usize, rr: usize| depth.at(cc, rr).map_or(head_z - head_size * 0.15, |(_, b)| b.min(head_z - head_size * 0.15)) - head_size * 0.04;
             let corners = [(c, r), (c + 1, r), (c, r + 1), (c + 1, r + 1)].map(|(cc, rr)| {
                 let (x, y) = projection.point(cc as f32 * cell, rr as f32 * cell);

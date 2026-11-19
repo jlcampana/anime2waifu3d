@@ -345,3 +345,28 @@ pub fn debug_image(image: &RgbaImage, analysis: &Analysis) -> RgbaImage {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skin_tones_are_recognised() {
+        let skin = |rgb: [u8; 3]| skin_like(lab(rgb.map(|v| v as f32 / 255.0)));
+        assert!(skin([250, 220, 200]), "piel clara");
+        assert!(skin([200, 140, 100]), "piel morena");
+        assert!(!skin([255, 255, 255]), "camisa blanca");
+        assert!(!skin([30, 40, 80]), "falda azul marino");
+        assert!(!skin([20, 20, 20]), "pelo negro");
+    }
+
+    #[test]
+    fn kmeans_separates_clear_groups() {
+        let mut samples = vec![Vec3::new(10.0, 0.0, 0.0); 50];
+        samples.extend(vec![Vec3::new(90.0, 0.0, 0.0); 50]);
+        let centres = kmeans(&samples, 2);
+        let mut l: Vec<f32> = centres.iter().map(|c| c.x).collect();
+        l.sort_by(f32::total_cmp);
+        assert!((l[0] - 10.0).abs() < 1e-3 && (l[1] - 90.0).abs() < 1e-3, "{l:?}");
+    }
+}
