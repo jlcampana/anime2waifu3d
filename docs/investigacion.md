@@ -397,6 +397,16 @@ Petición del usuario: crear personajes desde la interfaz gráfica, además de p
 - ONNX Runtime solo admite un entorno por proceso: se crea una vez y se reutiliza. Antes fallaba la segunda imagen, o el segundo personaje sin cerrar la app.
 - Probado con tres imágenes de Nagatoro: elige la de cuerpo entero y descarta la portada y la de blanco y negro. La espalda, probada a la fuerza con la misma imagen: la proyección funciona. **Falta una imagen de espaldas real.**
 
+## 6l. Paneles en su propia ventana (2026-11-19)
+
+Petición del usuario: que los paneles puedan salir del marco de la aplicación.
+
+- «Vista» (izquierda) y «Capas» (derecha) tienen «↗ Sacar a otra ventana». El panel pasa a una ventana propia del sistema, que se puede mover fuera de la aplicación o a otro monitor.
+- Vuelve con «↙ Volver a la ventana principal» o al cerrar su ventana.
+- Cada ventana de panel tiene su superficie wgpu, con la misma instancia, adaptador y dispositivo que la principal, y su propio contexto de egui con el mismo estilo. Dibuja la misma función de panel sobre la `App` común.
+- La ventana principal deja de reservar el hueco del panel que está fuera.
+- No se usa el sistema de *viewports* de egui, porque nuestra integración winit+wgpu no lo implementa. Son ventanas winit independientes.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

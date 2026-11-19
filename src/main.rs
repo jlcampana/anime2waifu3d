@@ -18,7 +18,7 @@ mod renderer;
 mod rig;
 mod segment;
 
-use app::{App, Options};
+use app::{App, Options, Panel};
 use renderer::camera::Shot;
 use renderer::scene::ViewMode;
 use renderer::RenderContext;
@@ -43,6 +43,140 @@ struct Handler {
     last_frame: std::time::Instant,
     /// Diálogo de archivo abierto (va en otro hilo para que la ventana siga respondiendo).
     dialog: Option<Dialog>,
+    /// Paneles sacados a su propia ventana.
+    panels: Vec<PanelWindow>,
+}
+
+/// Un panel en su propia ventana del sistema: misma GPU, su superficie y su propio egui.
+struct PanelWindow {
+    kind: Panel,
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    renderer: egui_wgpu::Renderer,
+}
+
+impl PanelWindow {
+    fn new(event_loop: &ActiveEventLoop, app: &App, kind: Panel) -> anyhow::Result<Self> {
+        let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(Window::default_attributes(), "anime2waifu3d", "anime2waifu3d");
+        let attributes = winit::platform::x11::WindowAttributesExtX11::with_name(attributes, "anime2waifu3d", "anime2waifu3d");
+        let window = Arc::new(event_loop.create_window(attributes.with_title(kind.title()).with_inner_size(winit::dpi::LogicalSize::new(320u32, 860u32)))?);
+        let surface = app.ctx.instance.create_surface(window.clone())?;
+        let capabilities = surface.get_capabilities(&app.ctx.adapter);
+        let format = capabilities.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(capabilities.formats[0]);
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: capabilities.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&app.ctx.device, &config);
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_style(app.egui_ctx.style());
+        let egui_state = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), None, Some(2048));
+        let renderer = egui_wgpu::Renderer::new(&app.ctx.device, format, None, 1, false);
+        Ok(Self { kind, window, surface, config, egui_ctx, egui_state, renderer })
+    }
+
+    fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.config.width = width;
+            self.config.height = height;
+            self.surface.configure(device, &self.config);
+        }
+    }
+
+    /// Dibuja el panel. Lo que pida (diálogos, planos de cámara) se aplica a la app.
+    fn render(&mut self, app: &mut App, selected: &mut Option<usize>, dialog: &mut Option<Dialog>) {
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let ctx = self.egui_ctx.clone();
+        let (mut request, mut frame_shot) = (None, None);
+        let dialog_open = dialog.is_some();
+        let kind = self.kind;
+        let output = ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add_enabled_ui(!dialog_open, |ui| match kind {
+                        Panel::View => view_panel(ui, app, &mut request, &mut frame_shot),
+                        Panel::Layers => layers_panel(ui, app, selected),
+                    });
+                });
+            });
+        });
+        self.egui_state.handle_platform_output(&self.window, output.platform_output);
+        if let (Some(request), None) = (request, dialog.as_ref()) {
+            *dialog = Some(Dialog::open(request, app));
+        }
+        if let Some(shot) = frame_shot {
+            app.frame(shot);
+        }
+        let frame = match self.surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(_) => {
+                self.surface.configure(&app.ctx.device, &self.config);
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&Default::default());
+        let mut encoder = app.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("panel") });
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: self.window.scale_factor() as f32 };
+        for (id, delta) in &output.textures_delta.set {
+            self.renderer.update_texture(&app.ctx.device, &app.ctx.queue, *id, delta);
+        }
+        let tris = ctx.tessellate(output.shapes, output.pixels_per_point);
+        self.renderer.update_buffers(&app.ctx.device, &app.ctx.queue, &mut encoder, &tris, &screen);
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("panel"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 }), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            let mut pass = pass.forget_lifetime();
+            self.renderer.render(&mut pass, &tris, &screen);
+        }
+        for id in &output.textures_delta.free {
+            self.renderer.free_texture(id);
+        }
+        app.ctx.queue.submit([encoder.finish()]);
+        frame.present();
+    }
+}
+
+impl Handler {
+    /// Saca o devuelve los paneles que se hayan pedido.
+    fn update_panels(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(app) = &mut self.app else { return };
+        for (kind, detach) in std::mem::take(&mut app.panel_requests) {
+            let open = self.panels.iter().position(|p| p.kind == kind);
+            match (detach, open) {
+                (true, None) => match PanelWindow::new(event_loop, app, kind) {
+                    Ok(panel) => {
+                        self.panels.push(panel);
+                        app.detached[kind.index()] = true;
+                    }
+                    Err(error) => app.status = format!("No se pudo abrir la ventana del panel: {error:#}"),
+                },
+                (false, Some(i)) => {
+                    self.panels.remove(i);
+                    app.detached[kind.index()] = false;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for Handler {
@@ -104,7 +238,22 @@ impl ApplicationHandler for Handler {
         self.app = Some(app);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Eventos de una ventana de panel.
+        if let Some(i) = self.panels.iter().position(|p| p.window.id() == id) {
+            let Some(app) = &mut self.app else { return };
+            let panel = &mut self.panels[i];
+            let _ = panel.egui_state.on_window_event(&panel.window, &event);
+            match &event {
+                // Cerrar la ventana devuelve el panel a la principal.
+                WindowEvent::CloseRequested => app.panel_requests.push((panel.kind, false)),
+                WindowEvent::Resized(size) => panel.resize(&app.ctx.device, size.width, size.height),
+                WindowEvent::RedrawRequested => panel.render(app, &mut self.selected_layer, &mut self.dialog),
+                _ => {}
+            }
+            self.update_panels(event_loop);
+            return;
+        }
         let (Some(app), Some(window)) = (&mut self.app, &self.window) else { return };
         let consumed = app.egui_state.on_window_event(window, &event).consumed;
         match &event {
@@ -145,9 +294,11 @@ impl ApplicationHandler for Handler {
             }
             _ => {}
         }
+        self.update_panels(event_loop);
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.panels.clear();
         self.app = None;
         self.window = None;
     }
@@ -155,6 +306,9 @@ impl ApplicationHandler for Handler {
     fn about_to_wait(&mut self, _: &ActiveEventLoop) {
         if let Some(w) = &self.window {
             w.request_redraw();
+        }
+        for panel in &self.panels {
+            panel.window.request_redraw();
         }
     }
 }
@@ -251,19 +405,24 @@ fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selecte
     let mut request = None;
     let mut frame_shot = None;
     let output = egui_ctx.run(raw_input, |ctx| {
-        let left = egui::SidePanel::left("vista").default_width(230.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // Con un diálogo abierto no se pueden pedir otros.
-                ui.add_enabled_ui(!dialog_open, |ui| view_panel(ui, app, &mut request, &mut frame_shot));
-            });
+        // Los paneles que estén en su propia ventana no se dibujan aquí.
+        let left = (!app.detached[Panel::View.index()]).then(|| {
+            egui::SidePanel::left("vista").default_width(230.0).show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Con un diálogo abierto no se pueden pedir otros.
+                    ui.add_enabled_ui(!dialog_open, |ui| view_panel(ui, app, &mut request, &mut frame_shot));
+                });
+            })
         });
         job_window(ctx, app);
-        let right = egui::SidePanel::right("capas").default_width(260.0).show(ctx, |ui| {
-            layers_panel(ui, app, selected);
+        let right = (!app.detached[Panel::Layers.index()]).then(|| {
+            egui::SidePanel::right("capas").default_width(260.0).show(ctx, |ui| {
+                layers_panel(ui, app, selected);
+            })
         });
         egui::TopBottomPanel::bottom("estado").show(ctx, |ui| ui.label(&app.status));
         let ppp = ctx.pixels_per_point();
-        *insets = (left.response.rect.width() * ppp, right.response.rect.width() * ppp);
+        *insets = (left.map_or(0.0, |l| l.response.rect.width() * ppp), right.map_or(0.0, |r| r.response.rect.width() * ppp));
     });
     if let (Some(request), None) = (request, dialog.as_ref()) {
         *dialog = Some(Dialog::open(request, app));
@@ -353,7 +512,21 @@ fn job_window(ctx: &egui::Context, app: &mut App) {
     app.show_job_window = open;
 }
 
+/// Botón para sacar el panel a su propia ventana, o para devolverlo a la principal.
+fn detach_button(ui: &mut egui::Ui, app: &mut App, panel: Panel) {
+    let detached = app.detached[panel.index()];
+    let (label, hint) = if detached {
+        ("↙ Volver a la ventana principal", "También vuelve al cerrar esta ventana")
+    } else {
+        ("↗ Sacar a otra ventana", "El panel pasa a una ventana propia que puedes mover fuera de la aplicación")
+    };
+    if ui.small_button(label).on_hover_text(hint).clicked() {
+        app.panel_requests.push((panel, !detached));
+    }
+}
+
 fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, frame_shot: &mut Option<Shot>) {
+    detach_button(ui, app, Panel::View);
     ui.heading("Crear");
     match app.job_running() {
         Some((title, seconds)) => {
@@ -505,6 +678,7 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, f
 /// Paleta de capas mínima: ojo, nombre, Alt+clic en el ojo para ver solo esa capa, y opacidad de la
 /// capa seleccionada. La paleta completa al estilo Photoshop llegará con la interfaz.
 fn layers_panel(ui: &mut egui::Ui, app: &mut App, selected: &mut Option<usize>) {
+    detach_button(ui, app, Panel::Layers);
     ui.heading("Capas");
     let Some(model) = &mut app.model else {
         ui.label("Sin modelo");
@@ -973,6 +1147,7 @@ fn main() {
         selected_layer: None,
         last_frame: std::time::Instant::now(),
         dialog: None,
+        panels: Vec::new(),
     };
     event_loop.run_app(&mut handler).expect("fallo en el bucle de eventos");
 }

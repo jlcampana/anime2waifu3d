@@ -7,7 +7,7 @@
 //!   riggeado (reducción con Blender si es muy densa, segmentación, rig, pelo, falda y cara).
 
 use crate::model::Model;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use image::RgbaImage;
 use std::path::{Path, PathBuf};
 
@@ -86,11 +86,6 @@ fn averaged_keypoints(main: &Candidate, all: &[Candidate]) -> crate::analyze::Ke
     out.hip_width = width(|q| q.hip_width);
     out.heads_tall = tall / (out.chin - out.top).max(1) as f32;
     out
-}
-
-/// Una ilustración → personaje (ver `from_images`).
-pub fn from_image(image_path: &Path, base: &Path, progress: &dyn Fn(String)) -> Result<ImageResult> {
-    from_images(&[image_path.to_path_buf()], base, progress)
 }
 
 /// Varias ilustraciones del mismo personaje → personaje. La mejor de frente y de cuerpo entero

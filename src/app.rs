@@ -31,6 +31,26 @@ pub struct JobOutput {
     pub images: Vec<(String, image::RgbaImage)>,
 }
 
+/// Paneles que se pueden sacar a una ventana propia.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Panel {
+    View,
+    Layers,
+}
+
+impl Panel {
+    pub fn title(self) -> &'static str {
+        match self {
+            Panel::View => "anime2waifu3d · Vista",
+            Panel::Layers => "anime2waifu3d · Capas",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 pub struct App {
     pub ctx: RenderContext,
     pub egui_ctx: egui::Context,
@@ -74,6 +94,9 @@ pub struct App {
     pub job_log: Vec<String>,
     pub job_images: Vec<(String, egui::TextureHandle)>,
     pub show_job_window: bool,
+    /// Paneles en su propia ventana, y peticiones de sacarlos o devolverlos.
+    pub detached: [bool; 2],
+    pub panel_requests: Vec<(Panel, bool)>,
 }
 
 impl App {
@@ -117,6 +140,8 @@ impl App {
             job_log: Vec::new(),
             job_images: Vec::new(),
             show_job_window: false,
+            detached: [false; 2],
+            panel_requests: Vec::new(),
             status: "Arrastra un modelo .glb, .gltf o .vrm a la ventana, o usa Abrir modelo".into(),
         }
     }

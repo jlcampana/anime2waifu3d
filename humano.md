@@ -55,6 +55,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
     - Una de espaldas pinta la espalda y el pelo de detrás. La ventana «Proceso» enseña el avance, el recorte y el análisis; si sale raro, ahí se ve por qué.
   - «Preparar malla de IA…» hace lo mismo con una malla de una pieza (SupaVoxel): unos 2 minutos.
   - Después lo guardas con «Guardar proyecto…» o lo exportas con «Exportar…».
+  - Los paneles «Vista» y «Capas» tienen «↗ Sacar a otra ventana»: pasan a una ventana propia que puedes llevar fuera de la aplicación. Vuelven con «↙ Volver…» o cerrando esa ventana. **No lo he podido ver en pantalla: dime si funciona.**
   - Por línea de comandos sigue funcionando todo (`imagen`, `preparar`, `export`…).
 
   Mejor resultado con:
