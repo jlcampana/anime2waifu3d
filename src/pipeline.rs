@@ -27,31 +27,129 @@ pub fn default_base() -> PathBuf {
 
 pub struct ImageResult {
     pub model: Model,
-    /// La imagen sin fondo y la de comprobación del análisis (imagen y partes, con líneas).
-    pub cutout: RgbaImage,
-    pub analysis: RgbaImage,
+    /// Por imagen: su papel ("frente", "espalda", "no usada"…), la imagen sin fondo y la de
+    /// comprobación del análisis (imagen y partes, con líneas).
+    pub images: Vec<(String, RgbaImage, RgbaImage)>,
 }
 
+/// Una imagen ya recortada y analizada.
+struct Candidate {
+    name: String,
+    cut: RgbaImage,
+    analysis: crate::analyze::Analysis,
+}
+
+impl Candidate {
+    /// Se ve la cara (la imagen es de frente).
+    fn front(&self) -> bool {
+        self.analysis.keypoints.face_width > 0.0
+    }
+
+    /// De cuerpo entero con proporciones creíbles.
+    fn full_body(&self) -> bool {
+        (4.8..=9.5).contains(&self.analysis.keypoints.heads_tall)
+    }
+
+    /// Para elegir la principal: de frente, de cuerpo entero, con piel distinguible y cerca de
+    /// las 6,5 cabezas habituales.
+    fn score(&self) -> f32 {
+        let k = &self.analysis.keypoints;
+        (self.front() as u8 * 3 + self.full_body() as u8 * 2 + self.analysis.skin_by_color as u8) as f32 - (k.heads_tall - 6.5).abs() * 0.2
+    }
+}
+
+/// Puntos clave de la principal con las proporciones medias de todas las de frente y de cuerpo
+/// entero (alturas y anchos relativos al alto de cada imagen).
+fn averaged_keypoints(main: &Candidate, all: &[Candidate]) -> crate::analyze::Keypoints {
+    let k = &main.analysis.keypoints;
+    let usable: Vec<&Candidate> = all.iter().filter(|c| c.front() && c.full_body() && c.analysis.skin_by_color).collect();
+    if usable.len() < 2 {
+        return k.clone();
+    }
+    let tall = (k.feet - k.top) as f32;
+    let mean = |f: &dyn Fn(&crate::analyze::Keypoints) -> f32| -> f32 { usable.iter().map(|c| f(&c.analysis.keypoints)).sum::<f32>() / usable.len() as f32 };
+    let row = |f: fn(&crate::analyze::Keypoints) -> u32| -> u32 {
+        let n = mean(&|q: &crate::analyze::Keypoints| (f(q).saturating_sub(q.top)) as f32 / (q.feet - q.top).max(1) as f32);
+        k.top + (n * tall).round() as u32
+    };
+    let width = |f: fn(&crate::analyze::Keypoints) -> f32| mean(&|q: &crate::analyze::Keypoints| f(q) / (q.feet - q.top).max(1) as f32) * tall;
+    let mut out = k.clone();
+    out.chin = row(|q| q.chin);
+    out.shoulders = row(|q| q.shoulders);
+    out.waist = row(|q| q.waist);
+    out.hips = row(|q| q.hips);
+    out.crotch = row(|q| q.crotch);
+    out.knees = row(|q| q.knees);
+    out.face_width = width(|q| q.face_width);
+    out.shoulder_width = width(|q| q.shoulder_width);
+    out.waist_width = width(|q| q.waist_width);
+    out.hip_width = width(|q| q.hip_width);
+    out.heads_tall = tall / (out.chin - out.top).max(1) as f32;
+    out
+}
+
+/// Una ilustración → personaje (ver `from_images`).
 pub fn from_image(image_path: &Path, base: &Path, progress: &dyn Fn(String)) -> Result<ImageResult> {
-    let image = image::open(image_path).with_context(|| format!("no se pudo abrir {}", image_path.display()))?.to_rgba8();
-    progress("1/6 quitando el fondo (unos 20 s)…".into());
-    let cut = crate::cutout::cut(&image, &crate::cutout::default_model())?;
-    progress("2/6 analizando partes y proporciones…".into());
-    let analysis = crate::analyze::analyze(&cut)?;
-    let analysis_image = crate::analyze::debug_image(&cut, &analysis);
-    let k = &analysis.keypoints;
-    progress(format!(
-        "    {:.1} cabezas de alto{}",
-        k.heads_tall,
-        if analysis.skin_by_color { "" } else { " (piel no distinguible por color: alturas supuestas)" }
-    ));
+    from_images(&[image_path.to_path_buf()], base, progress)
+}
+
+/// Varias ilustraciones del mismo personaje → personaje. La mejor de frente y de cuerpo entero
+/// es la principal (figura y frente); las proporciones son la media de todas las de frente y de
+/// cuerpo entero; una de espaldas (sin cara), si la hay, pinta la espalda.
+pub fn from_images(paths: &[PathBuf], base: &Path, progress: &dyn Fn(String)) -> Result<ImageResult> {
+    anyhow::ensure!(!paths.is_empty(), "no hay imágenes");
+    let mut candidates = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("imagen").to_string();
+        progress(format!("1/6 quitando el fondo de {name} ({}/{}, unos 20 s)…", i + 1, paths.len()));
+        let image = match image::open(path) {
+            Ok(image) => image.to_rgba8(),
+            Err(error) => {
+                progress(format!("    no se pudo abrir {name}: {error}"));
+                continue;
+            }
+        };
+        let cut = crate::cutout::cut(&image, &crate::cutout::default_model())?;
+        progress(format!("2/6 analizando {name}…"));
+        match crate::analyze::analyze(&cut) {
+            Ok(analysis) => {
+                let k = &analysis.keypoints;
+                progress(format!(
+                    "    {:.1} cabezas, {}{}",
+                    k.heads_tall,
+                    if k.face_width > 0.0 { "de frente" } else { "sin cara visible" },
+                    if analysis.skin_by_color { "" } else { ", piel no distinguible por color" }
+                ));
+                candidates.push(Candidate { name, cut, analysis });
+            }
+            Err(error) => progress(format!("    {name}: {error:#}")),
+        }
+    }
+    anyhow::ensure!(!candidates.is_empty(), "ninguna imagen tiene un personaje reconocible");
+    let main_index = (0..candidates.len()).max_by(|a, b| candidates[*a].score().total_cmp(&candidates[*b].score())).unwrap();
+    // De espaldas: sin cara, de cuerpo entero y con piel visible (si no, puede ser cualquier cosa).
+    let mut back_index = (0..candidates.len()).find(|&i| i != main_index && !candidates[i].front() && candidates[i].full_body() && candidates[i].analysis.skin_by_color);
+    // Depuración: A2W_ESPALDA=n usa la imagen n (desde 1) como espalda aunque tenga cara.
+    if let Some(n) = std::env::var("A2W_ESPALDA").ok().and_then(|v| v.parse::<usize>().ok()) {
+        back_index = n.checked_sub(1).filter(|i| *i < candidates.len());
+    }
+    let main = &candidates[main_index];
+    progress(format!("    principal: {}{}", main.name, back_index.map_or(String::new(), |b| format!("; espalda: {}", candidates[b].name))));
+    let analysis = crate::analyze::Analysis { keypoints: averaged_keypoints(main, &candidates), ..main.analysis.clone() };
+    let cut = &main.cut;
+    let image_path = &paths[0];
     progress("3/6 ajustando el cuerpo base…".into());
     let mut model = Model::load(base)?;
-    model.name = image_path.file_stem().and_then(|s| s.to_str()).unwrap_or("personaje").to_string();
-    let fit = crate::fit::fit(&mut model, k)?;
+    let _ = image_path;
+    model.name = std::path::Path::new(&main.name).file_stem().and_then(|s| s.to_str()).unwrap_or("personaje").to_string();
+    let fit = crate::fit::fit(&mut model, &analysis.keypoints)?;
     progress(format!("    cabeza x{:.2}, hombros x{:.2}, cintura x{:.2}", fit.head, fit.shoulders, fit.waist));
     progress("4/6 pintando la imagen…".into());
-    let projection = crate::fit::project(&mut model, &cut, &analysis, &fit)?;
+    let projection = crate::fit::project(&mut model, cut, &analysis, &fit)?;
+    let back = match back_index {
+        Some(b) => Some(crate::fit::project_back(&mut model, &candidates[b].cut, &candidates[b].analysis, &projection)?),
+        None => None,
+    };
     // La cara de Base_Female, como piel para buscar ojos y boca.
     for layer in &mut model.layers {
         if layer.name.eq_ignore_ascii_case("face") {
@@ -61,7 +159,7 @@ pub fn from_image(image_path: &Path, base: &Path, progress: &dyn Fn(String)) -> 
     progress("5/6 cara: párpados y boca…".into());
     face(&mut model, progress);
     progress("6/6 pelo y falda…".into());
-    match crate::dress::add_hair(&mut model, &cut, &analysis, &projection) {
+    match crate::dress::add_hair(&mut model, cut, &analysis, &projection, back.as_ref()) {
         Ok((cap, sheets)) => progress(format!("    pelo: {cap} triángulos de casquete, {sheets} de melena")),
         Err(error) => progress(format!("    sin pelo: {error:#}")),
     }
@@ -71,7 +169,23 @@ pub fn from_image(image_path: &Path, base: &Path, progress: &dyn Fn(String)) -> 
         rows => progress(format!("    falda de {rows} filas de la imagen")),
     }
     strands(&crate::hair::rig_skirt(&mut model)?, progress);
-    Ok(ImageResult { model, cutout: cut, analysis: analysis_image })
+    let images = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let role = if i == main_index {
+                "frente (principal)"
+            } else if Some(i) == back_index {
+                "espalda"
+            } else if c.front() && c.full_body() {
+                "proporciones"
+            } else {
+                "no usada"
+            };
+            (format!("{}: {role}", c.name), c.cut.clone(), crate::analyze::debug_image(&c.cut, &c.analysis))
+        })
+        .collect();
+    Ok(ImageResult { model, images })
 }
 
 /// Una malla de IA de una pieza → personaje por capas y riggeado. `props`: objetos marcados a

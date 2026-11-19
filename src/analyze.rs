@@ -43,7 +43,7 @@ impl Part {
 }
 
 /// Puntos clave, en píxeles de la imagen (y hacia abajo). Los anchos son de la silueta sin pelo.
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Keypoints {
     pub top: u32,
     pub chin: u32,
@@ -62,7 +62,7 @@ pub struct Keypoints {
     pub heads_tall: f32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Analysis {
     pub width: u32,
     pub height: u32,

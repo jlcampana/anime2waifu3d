@@ -38,15 +38,28 @@ pub fn input(image: &RgbaImage, width: u32, height: u32) -> ndarray::Array4<f32>
     input
 }
 
-/// Ejecuta un modelo de una entrada y devuelve su última salida: forma y datos.
-pub fn run(model: &Path, input: ndarray::Array4<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
-    anyhow::ensure!(model.exists(), "no está el modelo {} (ver assets/modelos/)", model.display());
+/// El entorno de ONNX Runtime: solo puede haber uno por proceso, así que se crea la primera vez
+/// y se reutiliza (varias imágenes seguidas, o crear otro personaje sin cerrar la app).
+fn environment() -> Result<ort::environment::Environment> {
+    static ENVIRONMENT: std::sync::Mutex<Option<ort::environment::Environment>> = std::sync::Mutex::new(None);
+    let mut slot = ENVIRONMENT.lock().map_err(|_| anyhow::anyhow!("ONNX Runtime: entorno bloqueado"))?;
+    if let Some(environment) = slot.as_ref() {
+        return Ok(environment.clone());
+    }
     let library = runtime_library()?;
-    let error = |e: &dyn std::fmt::Display| anyhow::anyhow!("ONNX Runtime: {e}");
     let environment = ort::init_from(&library)
         .map_err(|e| anyhow::anyhow!("no se pudo cargar {}: {e}", library.display()))?
         .build()
-        .map_err(|e| error(&e))?;
+        .map_err(|e| anyhow::anyhow!("ONNX Runtime: {e}"))?;
+    *slot = Some(environment.clone());
+    Ok(environment)
+}
+
+/// Ejecuta un modelo de una entrada y devuelve su última salida: forma y datos.
+pub fn run(model: &Path, input: ndarray::Array4<f32>) -> Result<(Vec<usize>, Vec<f32>)> {
+    anyhow::ensure!(model.exists(), "no está el modelo {} (ver assets/modelos/)", model.display());
+    let error = |e: &dyn std::fmt::Display| anyhow::anyhow!("ONNX Runtime: {e}");
+    let environment = environment()?;
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut session = ort::session::Session::builder(&environment)
         .map_err(|e| error(&e))?

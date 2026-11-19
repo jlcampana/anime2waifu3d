@@ -41,6 +41,8 @@ struct Handler {
     insets: (f32, f32),
     selected_layer: Option<usize>,
     last_frame: std::time::Instant,
+    /// Diálogo de archivo abierto (va en otro hilo para que la ventana siga respondiendo).
+    dialog: Option<Dialog>,
 }
 
 impl ApplicationHandler for Handler {
@@ -138,7 +140,7 @@ impl ApplicationHandler for Handler {
                 let now = std::time::Instant::now();
                 app.tick(now.duration_since(self.last_frame).as_secs_f32());
                 self.last_frame = now;
-                render_frame(app, window, &mut self.insets, &mut self.selected_layer);
+                render_frame(app, window, &mut self.insets, &mut self.selected_layer, &mut self.dialog);
                 window.request_redraw();
             }
             _ => {}
@@ -157,23 +159,103 @@ impl ApplicationHandler for Handler {
     }
 }
 
-/// Diálogos de archivo que pide la interfaz (se abren fuera del dibujo de egui).
+/// Diálogos de archivo que pide la interfaz.
 #[derive(Clone, Copy, PartialEq)]
 enum Request {
     Open,
+    /// Una o varias ilustraciones del mismo personaje.
     FromImage,
     FromMesh,
+    SaveProject,
+    Export(project::Format, bool),
 }
 
-fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selected: &mut Option<usize>) {
+/// Un diálogo de archivo abierto en otro hilo: el portal de escritorio puede tardar lo que el
+/// usuario quiera, y si espera el hilo de la ventana, GNOME la da por colgada.
+struct Dialog {
+    request: Request,
+    receiver: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
+}
+
+impl Dialog {
+    fn open(request: Request, app: &App) -> Self {
+        // Nombre propuesto al guardar: el del archivo abierto o el del personaje.
+        let stem = app
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+            .or_else(|| app.model.as_ref().map(|m| m.name.clone()))
+            .unwrap_or_else(|| "personaje".into());
+        let stem = stem.trim_end_matches(".proyecto").to_string();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let repaint = app.egui_ctx.clone();
+        std::thread::spawn(move || {
+            let dialog = rfd::FileDialog::new();
+            let paths: Vec<std::path::PathBuf> = match request {
+                Request::Open => dialog.set_title("Abrir modelo o proyecto").add_filter("Modelos 3D y proyectos", &["glb", "gltf", "vrm"]).pick_file().into_iter().collect(),
+                Request::FromImage => dialog
+                    .set_title("Ilustraciones del personaje (puedes elegir varias: de frente, de espaldas…)")
+                    .add_filter("Imágenes", &["png", "jpg", "jpeg", "webp"])
+                    .pick_files()
+                    .unwrap_or_default(),
+                Request::FromMesh => dialog.set_title("Malla de IA de una pieza").add_filter("Modelos 3D", &["glb", "gltf"]).pick_file().into_iter().collect(),
+                Request::SaveProject => dialog
+                    .set_title("Guardar proyecto")
+                    .add_filter("Proyecto anime2waifu3d (GLB)", &["glb"])
+                    .set_file_name(format!("{stem}.proyecto.glb"))
+                    .save_file()
+                    .into_iter()
+                    .collect(),
+                Request::Export(format, _) => dialog
+                    .set_title("Exportar")
+                    .add_filter(format.name(), &[format.extension()])
+                    .set_file_name(format!("{stem}.{}", format.extension()))
+                    .save_file()
+                    .into_iter()
+                    .collect(),
+            };
+            let _ = sender.send(paths);
+            repaint.request_repaint();
+        });
+        Dialog { request, receiver }
+    }
+}
+
+fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selected: &mut Option<usize>, dialog: &mut Option<Dialog>) {
     app.poll_job();
+    // Lo que haya elegido el usuario en el diálogo abierto.
+    if let Some(open) = dialog {
+        match open.receiver.try_recv() {
+            Ok(paths) => {
+                let request = open.request;
+                *dialog = None;
+                if let Some(path) = paths.first() {
+                    match request {
+                        Request::Open => app.open(path),
+                        Request::FromImage => app.start_from_images(paths.clone()),
+                        Request::FromMesh => app.start_from_ai_mesh(path.clone()),
+                        Request::SaveProject => app.save_project(path),
+                        Request::Export(format, only_visible) => app.export(path, format, only_visible),
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => *dialog = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+    let dialog_open = dialog.is_some();
     let raw_input = app.egui_state.take_egui_input(window);
     let egui_ctx = app.egui_ctx.clone();
     let mut request = None;
     let mut frame_shot = None;
     let output = egui_ctx.run(raw_input, |ctx| {
         let left = egui::SidePanel::left("vista").default_width(230.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| view_panel(ui, app, &mut request, &mut frame_shot));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // Con un diálogo abierto no se pueden pedir otros.
+                ui.add_enabled_ui(!dialog_open, |ui| view_panel(ui, app, &mut request, &mut frame_shot));
+            });
         });
         job_window(ctx, app);
         let right = egui::SidePanel::right("capas").default_width(260.0).show(ctx, |ui| {
@@ -183,23 +265,8 @@ fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selecte
         let ppp = ctx.pixels_per_point();
         *insets = (left.response.rect.width() * ppp, right.response.rect.width() * ppp);
     });
-    match request {
-        Some(Request::Open) => {
-            if let Some(path) = rfd::FileDialog::new().add_filter("Modelos 3D y proyectos", &["glb", "gltf", "vrm"]).pick_file() {
-                app.open(&path);
-            }
-        }
-        Some(Request::FromImage) => {
-            if let Some(path) = rfd::FileDialog::new().set_title("Ilustración del personaje").add_filter("Imágenes", &["png", "jpg", "jpeg", "webp"]).pick_file() {
-                app.start_from_image(path);
-            }
-        }
-        Some(Request::FromMesh) => {
-            if let Some(path) = rfd::FileDialog::new().set_title("Malla de IA de una pieza").add_filter("Modelos 3D", &["glb", "gltf"]).pick_file() {
-                app.start_from_ai_mesh(path);
-            }
-        }
-        None => {}
+    if let (Some(request), None) = (request, dialog.as_ref()) {
+        *dialog = Some(Dialog::open(request, app));
     }
     let size = window.inner_size();
     app.camera.set_insets(insets.0, insets.1, size.width as f32, size.height as f32);
@@ -301,7 +368,7 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, f
         None => {
             if ui
                 .button("Personaje desde imagen…")
-                .on_hover_text("Una ilustración de cuerpo entero, de frente y con fondo sencillo. Tarda unos 25 s.")
+                .on_hover_text("Una o varias ilustraciones del mismo personaje: la mejor de cuerpo entero y de frente da la figura y el frente; una de espaldas, si la hay, la espalda. Unos 25 s por imagen.")
                 .clicked()
             {
                 *request = Some(Request::FromImage);
@@ -324,13 +391,13 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, f
     }
     if app.model.is_some() {
         if ui.button("Guardar proyecto… (Ctrl+S)").clicked() {
-            save_project_dialog(app);
+            *request = Some(Request::SaveProject);
         }
         // Ctrl+S guarda sobre el proyecto abierto; si lo abierto no es un proyecto, pregunta.
         if ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
             match app.path.clone().filter(|p| p.to_string_lossy().ends_with(".proyecto.glb")) {
                 Some(path) => app.save_project(&path),
-                None => save_project_dialog(app),
+                None => *request = Some(Request::SaveProject),
             }
         }
         ui.menu_button("Exportar…", |ui| {
@@ -340,15 +407,7 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, f
             for format in project::Format::ALL {
                 if ui.button(format.name()).clicked() {
                     ui.close_menu();
-                    let stem = app.path.as_ref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("modelo").to_string();
-                    let stem = stem.trim_end_matches(".proyecto").to_string();
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter(format.name(), &[format.extension()])
-                        .set_file_name(format!("{stem}.{}", format.extension()))
-                        .save_file()
-                    {
-                        app.export(&path, format, only_visible);
-                    }
+                    *request = Some(Request::Export(format, only_visible));
                 }
             }
         });
@@ -440,19 +499,6 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, f
         if ui.button(shot.name()).clicked() {
             *frame_shot = Some(shot);
         }
-    }
-}
-
-/// Diálogo para guardar el proyecto (un GLB con el estado de la app).
-fn save_project_dialog(app: &mut App) {
-    let name = app
-        .path
-        .as_ref()
-        .and_then(|p| p.file_stem())
-        .and_then(|s| s.to_str())
-        .map_or("proyecto".to_string(), |s| if s.ends_with(".proyecto") { s.to_string() } else { format!("{s}.proyecto") });
-    if let Some(path) = rfd::FileDialog::new().add_filter("Proyecto anime2waifu3d (GLB)", &["glb"]).set_file_name(format!("{name}.glb")).save_file() {
-        app.save_project(&path);
     }
 }
 
@@ -704,7 +750,8 @@ fn run_analyze(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `anime2waifu3d imagen IMAGEN SALIDA.glb [--base Base_Female.vrm]`: de una ilustración a un
+/// `anime2waifu3d imagen IMAGEN [IMAGEN…] SALIDA.glb [--base Base_Female.vrm]`: de una o varias
+/// ilustraciones del mismo personaje a un
 /// modelo 3D (prototipo de la ruta desde imagen): quita el fondo, analiza partes y proporciones,
 /// ajusta el cuerpo base y le pinta la imagen. Deja al lado el recorte (`_recorte.png`) y la
 /// imagen del análisis (`_analisis.png`).
@@ -719,13 +766,17 @@ fn run_image(args: &[String]) -> anyhow::Result<()> {
             files.push(arg.clone());
         }
     }
-    let [input, output] = files.as_slice() else { anyhow::bail!("uso: imagen IMAGEN SALIDA.glb [--base Base_Female.vrm]") };
-    let output = std::path::Path::new(output);
+    anyhow::ensure!(files.len() >= 2, "uso: imagen IMAGEN [IMAGEN…] SALIDA.glb [--base Base_Female.vrm]");
+    let output = std::path::Path::new(files.last().unwrap());
+    let inputs: Vec<std::path::PathBuf> = files[..files.len() - 1].iter().map(std::path::PathBuf::from).collect();
     let stem = output.with_extension("");
     let start = std::time::Instant::now();
-    let result = pipeline::from_image(std::path::Path::new(input), &base, &|line| println!("{line}"))?;
-    result.cutout.save(format!("{}_recorte.png", stem.display()))?;
-    result.analysis.save(format!("{}_analisis.png", stem.display()))?;
+    let result = pipeline::from_images(&inputs, &base, &|line| println!("{line}"))?;
+    for (i, (_, cutout, analysis)) in result.images.iter().enumerate() {
+        let suffix = if result.images.len() > 1 { format!("_{}", i + 1) } else { String::new() };
+        cutout.save(format!("{}_recorte{suffix}.png", stem.display()))?;
+        analysis.save(format!("{}_analisis{suffix}.png", stem.display()))?;
+    }
     export_glb::write(&result.model, output)?;
     println!("-> {} en {:.1} s", output.display(), start.elapsed().as_secs_f32());
     Ok(())
@@ -921,6 +972,7 @@ fn main() {
         insets: (0.0, 0.0),
         selected_layer: None,
         last_frame: std::time::Instant::now(),
+        dialog: None,
     };
     event_loop.run_app(&mut handler).expect("fallo en el bucle de eventos");
 }

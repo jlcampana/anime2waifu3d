@@ -166,12 +166,19 @@ impl App {
         }
     }
 
-    /// Lanza en segundo plano la ruta desde imagen con esa ilustración.
-    pub fn start_from_image(&mut self, image: std::path::PathBuf) {
-        let title = format!("Personaje desde {}", image.file_name().and_then(|n| n.to_str()).unwrap_or("la imagen"));
+    /// Lanza en segundo plano la ruta desde imagen con una o varias ilustraciones del mismo
+    /// personaje.
+    pub fn start_from_images(&mut self, images: Vec<std::path::PathBuf>) {
+        let first = images.first().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("la imagen").to_string();
+        let title = if images.len() > 1 { format!("Personaje desde {} imágenes", images.len()) } else { format!("Personaje desde {first}") };
         self.start_job(title, move |progress| {
-            let result = crate::pipeline::from_image(&image, &crate::pipeline::default_base(), progress)?;
-            Ok(JobOutput { model: result.model, images: vec![("Sin fondo".into(), result.cutout), ("Partes y proporciones".into(), result.analysis)] })
+            let result = crate::pipeline::from_images(&images, &crate::pipeline::default_base(), progress)?;
+            let mut shown = Vec::new();
+            for (name, cutout, analysis) in result.images {
+                shown.push((name, cutout));
+                shown.push(("partes y proporciones".into(), analysis));
+            }
+            Ok(JobOutput { model: result.model, images: shown })
         });
     }
 
@@ -771,7 +778,7 @@ impl Options {
             app.open(path);
         }
         if let Some(image) = &self.from_image {
-            app.start_from_image(image.clone());
+            app.start_from_images(vec![image.clone()]);
             while app.job_running().is_some() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 app.poll_job();

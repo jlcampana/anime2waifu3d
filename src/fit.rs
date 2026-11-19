@@ -491,3 +491,78 @@ mod tests {
         assert!(out.get_pixel(5, 15)[0] > 150, "{:?}", out.get_pixel(5, 15));
     }
 }
+
+/// Una imagen de espaldas del mismo personaje, para pintar lo que mira hacia atrás.
+pub struct BackView {
+    pub centre_x: f32,
+    pub feet_row: f32,
+    pub feet_y: f32,
+    pub scale: f32,
+    pub width: u32,
+    pub height: u32,
+    /// Material con su textura (ya añadido al modelo).
+    pub material: usize,
+}
+
+impl BackView {
+    /// UV de un punto del modelo en la imagen de espaldas: de espaldas, la izquierda del
+    /// personaje sale a la izquierda de la imagen, así que la x va al revés.
+    pub fn uv(&self, p: Vec3) -> [f32; 2] {
+        let column = self.centre_x - p.x / self.scale;
+        let row = self.feet_row - (p.y - self.feet_y) / self.scale;
+        [column / self.width as f32, row / self.height as f32]
+    }
+}
+
+/// Pinta la espalda del modelo con una imagen de espaldas: los triángulos que en la pose de la
+/// proyección miran hacia atrás pasan a una primitiva propia con esa textura.
+pub fn project_back(model: &mut Model, image: &RgbaImage, analysis: &crate::analyze::Analysis, projection: &Projection) -> Result<BackView> {
+    let k = &analysis.keypoints;
+    let top_y = model.layers.iter().flat_map(|l| l.primitives.iter()).flat_map(|p| p.vertices.iter()).map(|v| v.position[1]).fold(f32::MIN, f32::max);
+    let keep: Vec<bool> = image.pixels().map(|p| p[3] > 128).collect();
+    let filled = fill(image, &keep);
+    let texture = model.textures.len();
+    model.textures.push(Texture { width: filled.width(), height: filled.height(), rgba: filled.into_raw() });
+    let material = model.materials.len();
+    model.materials.push(Material { name: "espalda".into(), base_color: [1.0; 4], texture: Some(texture), alpha: AlphaMode::Opaque, double_sided: false });
+    let back = BackView {
+        centre_x: k.centre_x,
+        feet_row: k.feet as f32,
+        feet_y: projection.feet_y,
+        scale: (top_y - projection.feet_y) / (k.feet - k.top).max(1) as f32,
+        width: image.width(),
+        height: image.height(),
+        material,
+    };
+    let posed = crate::pose::skin_model(model, &projection.local, &[]);
+    for (layer, posed_layer) in model.layers.iter_mut().zip(&posed) {
+        let mut backs = Vec::new();
+        for (p, q) in layer.primitives.iter_mut().zip(posed_layer) {
+            let positions: Vec<Vec3> = q.iter().map(|v| Vec3::from(v.position)).collect();
+            let (mut front, mut behind) = (Vec::new(), Vec::new());
+            for (t, tri) in p.indices.chunks_exact(3).enumerate() {
+                let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| positions[i as usize]);
+                if (b - a).cross(c - a).normalize_or_zero().z < -0.15 {
+                    behind.push(t);
+                } else {
+                    front.push(t);
+                }
+            }
+            if behind.is_empty() {
+                continue;
+            }
+            // Copia con las UV de la imagen de espaldas (de la pose de la proyección), y de ella
+            // solo los triángulos de atrás; la original se queda con los de delante.
+            let mut with_back = p.clone();
+            for (v, posed_v) in with_back.vertices.iter_mut().zip(&positions) {
+                v.uv = back.uv(*posed_v);
+            }
+            with_back.material = material;
+            backs.push(with_back.subset(&behind));
+            *p = p.subset(&front);
+        }
+        layer.primitives.retain(|p| !p.indices.is_empty());
+        layer.primitives.extend(backs);
+    }
+    Ok(back)
+}

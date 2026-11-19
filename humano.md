@@ -49,7 +49,10 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   git checkout ruta-imagen
   cargo run --release
   ```
-  - En el panel izquierdo, «Personaje desde imagen…»: eliges una ilustración y en unos 25 s el personaje aparece en el visor. La ventana «Proceso» enseña el avance, el recorte y el análisis; si sale raro, ahí se ve por qué.
+  - En el panel izquierdo, «Personaje desde imagen…»: eliges una o **varias ilustraciones del mismo personaje** (unos 25 s cada una) y el personaje aparece en el visor.
+    - La mejor de frente y de cuerpo entero da la figura y el frente.
+    - Las proporciones son la media de todas las de frente.
+    - Una de espaldas pinta la espalda y el pelo de detrás. La ventana «Proceso» enseña el avance, el recorte y el análisis; si sale raro, ahí se ve por qué.
   - «Preparar malla de IA…» hace lo mismo con una malla de una pieza (SupaVoxel): unos 2 minutos.
   - Después lo guardas con «Guardar proyecto…» o lo exportas con «Exportar…».
   - Por línea de comandos sigue funcionando todo (`imagen`, `preparar`, `export`…).
@@ -61,7 +64,7 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   - **no sexual**.
 
   El ejemplo es `assets/resultados/imagen_a_3d.png` (Nagatoro).
-- [ ] **Imágenes de prueba:** necesito varias ilustraciones de cuerpo entero así, para ajustar el proceso. Ahora solo tengo una (Nagatoro 1).
+- [ ] **Imágenes de prueba:** necesito varias ilustraciones de cuerpo entero así, para ajustar el proceso, y si puede ser **un mismo personaje de frente y de espaldas** (hojas de personaje o *turnarounds*), para probar la espalda. Ahora solo tengo una (Nagatoro 1).
   - Las de `assets/prueba` (Marin) no las he usado: son sexuales y el personaje es menor en la obra.
   - Valen personajes adultos o imágenes no sexuales, por ejemplo hojas de personaje (*character sheets*) o imágenes oficiales de cuerpo entero.
 

@@ -90,7 +90,7 @@ impl BodyDepth {
 }
 
 /// Añade el pelo con volumen. Devuelve cuántos triángulos de casquete y de melena.
-pub fn add_hair(model: &mut Model, image: &RgbaImage, analysis: &Analysis, projection: &Projection) -> Result<(usize, usize)> {
+pub fn add_hair(model: &mut Model, image: &RgbaImage, analysis: &Analysis, projection: &Projection, back: Option<&crate::fit::BackView>) -> Result<(usize, usize)> {
     let skeleton = model.skeleton.as_ref().context("el modelo no tiene esqueleto")?;
     let head = skeleton.bone("head").context("sin cabeza")?;
     let head_z = skeleton.rest_position(head).z;
@@ -118,9 +118,15 @@ pub fn add_hair(model: &mut Model, image: &RgbaImage, analysis: &Analysis, proje
         alpha: AlphaMode::Opaque,
         double_sided: true,
     });
+    // Lo de detrás, con la imagen de espaldas si la hay; si no, del color del pelo.
+    let behind_material = back.map_or(solid_material, |b| b.material);
     let make = |material: usize| Primitive { vertices: Vec::new(), indices: Vec::new(), material, joints: Vec::new(), weights: Vec::new(), morphs: Vec::new() };
     let push = |p: &mut Primitive, position: Vec3, normal: Vec3| -> u32 {
-        p.vertices.push(Vertex { position: position.to_array(), normal: normal.to_array(), uv: projection.uv(position) });
+        let uv = match back {
+            Some(b) if p.material == b.material => b.uv(position),
+            _ => projection.uv(position),
+        };
+        p.vertices.push(Vertex { position: position.to_array(), normal: normal.to_array(), uv });
         p.joints.push([head as u16, 0, 0, 0]);
         p.weights.push([1.0, 0.0, 0.0, 0.0]);
         (p.vertices.len() - 1) as u32
@@ -129,7 +135,7 @@ pub fn add_hair(model: &mut Model, image: &RgbaImage, analysis: &Analysis, proje
     // 1. Casquete.
     let chin_y = projection.point(0.0, k.chin as f32).1;
     let mut cap_front = make(image_material);
-    let mut cap_back = make(solid_material);
+    let mut cap_back = make(behind_material);
     let lift = head_size * 0.05;
     for layer in &model.layers {
         for p in &layer.primitives {
@@ -240,7 +246,7 @@ pub fn add_hair(model: &mut Model, image: &RgbaImage, analysis: &Analysis, proje
         }
     }
     let mut sheet_front = make(image_material);
-    let mut sheet_back = make(solid_material);
+    let mut sheet_back = make(behind_material);
     let mut front_index = vec![u32::MAX; corners];
     let mut back_index = vec![u32::MAX; corners];
     for i in 0..corners {
@@ -282,7 +288,7 @@ pub fn add_hair(model: &mut Model, image: &RgbaImage, analysis: &Analysis, proje
     // 3. Cortina por la espalda: desde la barbilla hasta la fila más baja con pelo, si la melena
     //    pasa de los hombros (aunque en la imagen solo asome por un lado: por detrás cubre la
     //    espalda), de un lado al otro de lo que haya en cada fila.
-    let mut curtain = make(solid_material);
+    let mut curtain = make(behind_material);
     // La fila más baja con pelo de verdad (al menos tres celdas: no un contorno suelto), y nunca
     // por debajo de la entrepierna.
     let crotch_row = (k.crotch as f32 / cell) as usize;

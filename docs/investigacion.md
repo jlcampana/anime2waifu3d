@@ -384,6 +384,19 @@ Petición del usuario: crear personajes desde la interfaz gráfica, además de p
 - `--desde-imagen IMAGEN` en las capturas lanza el mismo proceso que el botón y espera. Comprobado lanzando desde `/tmp`.
 - `scripts/instalar.sh`: solo Fedora.
 
+## 6k. Varias imágenes del mismo personaje y diálogos sin bloquear (2026-11-19)
+
+- **Diálogos de archivo.** Abrir, imagen, malla, guardar proyecto y exportar se abren en un hilo aparte. Si el hilo de la ventana esperaba al portal de escritorio, GNOME mostraba «no responde» cuando el usuario tardaba en elegir. Mientras hay un diálogo abierto, el panel no admite pedir otro.
+- **Varias imágenes** («Personaje desde imagen…» admite selección múltiple; `imagen IMG1 IMG2 … SALIDA.glb`).
+  - Cada una se recorta y se analiza.
+  - **Principal:** la de mejor puntuación (de frente con cara, de cuerpo entero, piel distinguible, cerca de 6,5 cabezas). Da la figura, el frente, el pelo y la falda.
+  - **Proporciones:** la media de todas las de frente y de cuerpo entero, con alturas y anchos relativos al alto de cada imagen.
+  - **Espalda:** una sin cara, de cuerpo entero y con piel visible pinta todo lo que mira hacia atrás (`fit::project_back`), reflejada en x. También el casquete, la melena y la cortina de pelo de detrás, en vez del color plano.
+  - La ventana «Proceso» enseña cada imagen con su papel: frente, espalda, proporciones o no usada.
+  - `A2W_ESPALDA=n` fuerza la imagen n como espalda (depuración).
+- ONNX Runtime solo admite un entorno por proceso: se crea una vez y se reutiliza. Antes fallaba la segunda imagen, o el segundo personaje sin cerrar la app.
+- Probado con tres imágenes de Nagatoro: elige la de cuerpo entero y descarta la portada y la de blanco y negro. La espalda, probada a la fuerza con la misma imagen: la proyección funciona. **Falta una imagen de espaldas real.**
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:
