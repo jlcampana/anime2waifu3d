@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 const SIZE: u32 = 518;
 
 pub fn default_model() -> PathBuf {
-    PathBuf::from("assets/modelos/depth-anything-v2-small.onnx")
+    crate::pipeline::resource("assets/modelos/depth-anything-v2-small.onnx")
 }
 
 pub type DepthMap = ImageBuffer<Luma<f32>, Vec<f32>>;

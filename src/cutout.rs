@@ -16,7 +16,7 @@ const SIZE: u32 = 1024;
 
 /// Dónde está el modelo por defecto (se descarga aparte; `assets/` no va en git).
 pub fn default_model() -> PathBuf {
-    PathBuf::from("assets/modelos/birefnet-toonout.onnx")
+    crate::pipeline::resource("assets/modelos/birefnet-toonout.onnx")
 }
 
 /// Máscara del personaje (0..1) del tamaño de la imagen.

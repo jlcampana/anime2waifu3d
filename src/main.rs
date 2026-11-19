@@ -11,6 +11,7 @@ mod lighting;
 mod model;
 mod onnx;
 mod physics;
+mod pipeline;
 mod pose;
 mod project;
 mod renderer;
@@ -156,15 +157,25 @@ impl ApplicationHandler for Handler {
     }
 }
 
+/// Diálogos de archivo que pide la interfaz (se abren fuera del dibujo de egui).
+#[derive(Clone, Copy, PartialEq)]
+enum Request {
+    Open,
+    FromImage,
+    FromMesh,
+}
+
 fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selected: &mut Option<usize>) {
+    app.poll_job();
     let raw_input = app.egui_state.take_egui_input(window);
     let egui_ctx = app.egui_ctx.clone();
-    let mut open_dialog = false;
+    let mut request = None;
     let mut frame_shot = None;
     let output = egui_ctx.run(raw_input, |ctx| {
         let left = egui::SidePanel::left("vista").default_width(230.0).show(ctx, |ui| {
-            view_panel(ui, app, &mut open_dialog, &mut frame_shot);
+            egui::ScrollArea::vertical().show(ui, |ui| view_panel(ui, app, &mut request, &mut frame_shot));
         });
+        job_window(ctx, app);
         let right = egui::SidePanel::right("capas").default_width(260.0).show(ctx, |ui| {
             layers_panel(ui, app, selected);
         });
@@ -172,10 +183,23 @@ fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selecte
         let ppp = ctx.pixels_per_point();
         *insets = (left.response.rect.width() * ppp, right.response.rect.width() * ppp);
     });
-    if open_dialog {
-        if let Some(path) = rfd::FileDialog::new().add_filter("Modelos 3D", &["glb", "gltf", "vrm"]).pick_file() {
-            app.open(&path);
+    match request {
+        Some(Request::Open) => {
+            if let Some(path) = rfd::FileDialog::new().add_filter("Modelos 3D y proyectos", &["glb", "gltf", "vrm"]).pick_file() {
+                app.open(&path);
+            }
         }
+        Some(Request::FromImage) => {
+            if let Some(path) = rfd::FileDialog::new().set_title("Ilustración del personaje").add_filter("Imágenes", &["png", "jpg", "jpeg", "webp"]).pick_file() {
+                app.start_from_image(path);
+            }
+        }
+        Some(Request::FromMesh) => {
+            if let Some(path) = rfd::FileDialog::new().set_title("Malla de IA de una pieza").add_filter("Modelos 3D", &["glb", "gltf"]).pick_file() {
+                app.start_from_ai_mesh(path);
+            }
+        }
+        None => {}
     }
     let size = window.inner_size();
     app.camera.set_insets(insets.0, insets.1, size.width as f32, size.height as f32);
@@ -231,9 +255,72 @@ fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selecte
     surface_texture.present();
 }
 
-fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_shot: &mut Option<Shot>) {
+/// Ventana del proceso: lo que va contando y, al terminar, sus imágenes (recorte y análisis).
+fn job_window(ctx: &egui::Context, app: &mut App) {
+    let mut open = app.show_job_window;
+    egui::Window::new("Proceso").open(&mut open).default_width(520.0).show(ctx, |ui| {
+        if let Some((title, seconds)) = app.job_running() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("{title} ({seconds:.0} s)"));
+            });
+        }
+        if !app.job_images.is_empty() {
+            ui.horizontal(|ui| {
+                for (name, texture) in &app.job_images {
+                    ui.vertical(|ui| {
+                        ui.label(name);
+                        let size = texture.size_vec2();
+                        let height = 320.0f32;
+                        ui.image((texture.id(), egui::vec2(size.x * height / size.y, height)));
+                    });
+                }
+            });
+        }
+        egui::ScrollArea::vertical().max_height(220.0).stick_to_bottom(true).show(ui, |ui| {
+            for line in &app.job_log {
+                ui.monospace(line);
+            }
+        });
+    });
+    app.show_job_window = open;
+}
+
+fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, frame_shot: &mut Option<Shot>) {
+    ui.heading("Crear");
+    match app.job_running() {
+        Some((title, seconds)) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("{title} ({seconds:.0} s)"));
+            });
+            if ui.button("Ver el proceso").clicked() {
+                app.show_job_window = true;
+            }
+        }
+        None => {
+            if ui
+                .button("Personaje desde imagen…")
+                .on_hover_text("Una ilustración de cuerpo entero, de frente y con fondo sencillo. Tarda unos 25 s.")
+                .clicked()
+            {
+                *request = Some(Request::FromImage);
+            }
+            if ui
+                .button("Preparar malla de IA…")
+                .on_hover_text("Una malla de una pieza (como las de SupaVoxel): capas, esqueleto, pelo, falda y cara. Tarda unos minutos.")
+                .clicked()
+            {
+                *request = Some(Request::FromMesh);
+            }
+            if !app.job_log.is_empty() && ui.button("Ver el último proceso").clicked() {
+                app.show_job_window = true;
+            }
+        }
+    }
+    ui.separator();
     if ui.button("Abrir modelo o proyecto…").clicked() {
-        *open_dialog = true;
+        *request = Some(Request::Open);
     }
     if app.model.is_some() {
         if ui.button("Guardar proyecto… (Ctrl+S)").clicked() {
@@ -623,7 +710,7 @@ fn run_analyze(args: &[String]) -> anyhow::Result<()> {
 /// imagen del análisis (`_analisis.png`).
 fn run_image(args: &[String]) -> anyhow::Result<()> {
     let mut files = Vec::new();
-    let mut base = std::path::PathBuf::from("assets/candidatas/vroid-cc0/base_female/Base_Female.vrm");
+    let mut base = pipeline::default_base();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if arg == "--base" {
@@ -636,43 +723,38 @@ fn run_image(args: &[String]) -> anyhow::Result<()> {
     let output = std::path::Path::new(output);
     let stem = output.with_extension("");
     let start = std::time::Instant::now();
-    let image = image::open(input)?.to_rgba8();
-    println!("1/6 quitando el fondo…");
-    let cut = cutout::cut(&image, &cutout::default_model())?;
-    cut.save(format!("{}_recorte.png", stem.display()))?;
-    println!("2/6 analizando partes y proporciones…");
-    let analysis = analyze::analyze(&cut)?;
-    analyze::debug_image(&cut, &analysis).save(format!("{}_analisis.png", stem.display()))?;
-    let k = &analysis.keypoints;
-    println!("    {:.1} cabezas de alto{}", k.heads_tall, if analysis.skin_by_color { "" } else { " (piel no distinguible: alturas supuestas)" });
-    println!("3/6 ajustando el cuerpo base…");
-    let mut model = model::Model::load(&base)?;
-    model.name = stem.file_name().and_then(|s| s.to_str()).unwrap_or("personaje").to_string();
-    let adjusted = fit::fit(&mut model, k)?;
-    println!("    cabeza x{:.2}, hombros x{:.2}, cintura x{:.2}", adjusted.head, adjusted.shoulders, adjusted.waist);
-    println!("4/6 pintando la imagen…");
-    let projection = fit::project(&mut model, &cut, &analysis, &adjusted)?;
-    // La cara de Base_Female, como piel para buscar ojos y boca.
-    for layer in &mut model.layers {
-        if layer.name.eq_ignore_ascii_case("face") {
-            layer.name = "piel cara".into();
+    let result = pipeline::from_image(std::path::Path::new(input), &base, &|line| println!("{line}"))?;
+    result.cutout.save(format!("{}_recorte.png", stem.display()))?;
+    result.analysis.save(format!("{}_analisis.png", stem.display()))?;
+    export_glb::write(&result.model, output)?;
+    println!("-> {} en {:.1} s", output.display(), start.elapsed().as_secs_f32());
+    Ok(())
+}
+
+/// `anime2waifu3d preparar MALLA SALIDA.glb [--base Base_Female.vrm] [--prop "capas=hueso"]`: de
+/// una malla de IA de una pieza a un personaje por capas y riggeado (lo mismo que hacen
+/// `segment`, `rig`, `hair` y `face` seguidos).
+fn run_prepare(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut base = pipeline::default_base();
+    let mut props = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--base" => base = it.next().ok_or_else(|| anyhow::anyhow!("falta el modelo base"))?.into(),
+            "--prop" => {
+                let value = it.next().ok_or_else(|| anyhow::anyhow!("falta el valor de --prop"))?;
+                let (layers, bone) = value.rsplit_once('=').ok_or_else(|| anyhow::anyhow!("--prop es \"capa,capa=hueso\""))?;
+                props.push(rig::Prop { layers: layers.split(',').map(|s| s.trim().to_string()).collect(), bone: bone.trim().to_string() });
+            }
+            _ => files.push(arg.clone()),
         }
     }
-    println!("5/6 cara: párpados y boca…");
-    print_face(face::rig_face(&mut model));
-    println!("6/6 pelo y falda…");
-    match dress::add_hair(&mut model, &cut, &analysis, &projection) {
-        Ok((cap, sheets)) => println!("    pelo: {cap} triángulos de casquete, {sheets} de melena"),
-        Err(error) => println!("    sin pelo: {error:#}"),
-    }
-    print_hair(&hair::rig_hair(&mut model)?);
-    match dress::add_skirt(&mut model, &analysis, &projection)? {
-        0 => println!("    sin falda"),
-        rows => println!("    falda de {rows} filas de la imagen"),
-    }
-    print_hair(&hair::rig_skirt(&mut model)?);
-    export_glb::write(&model, output)?;
-    println!("-> {} en {:.1} s", output.display(), start.elapsed().as_secs_f32());
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: preparar MALLA SALIDA.glb [--base Base_Female.vrm] [--prop \"capas=hueso\"]") };
+    let start = std::time::Instant::now();
+    let model = pipeline::from_ai_mesh(std::path::Path::new(input), &base, &props, &|line| println!("{line}"))?;
+    export_glb::write(&model, std::path::Path::new(output))?;
+    println!("-> {output} en {:.1} s", start.elapsed().as_secs_f32());
     Ok(())
 }
 
@@ -769,6 +851,13 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("analizar") {
         if let Err(error) = run_analyze(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("preparar") {
+        if let Err(error) = run_prepare(&args[1..]) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }

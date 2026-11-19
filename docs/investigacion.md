@@ -370,6 +370,20 @@ El comando `imagen` hace ahora seis pasos: recorte, análisis, ajuste, pintura, 
   - La cortina de la espalda ya no es un rectángulo: por debajo de los hombros no es más ancha que ellos, el bajo es redondeado (más largo en el centro) y las puntas son desiguales, como mechones.
   - Pendiente: el brazo en jarra no se reproduce, y la melena de los lados es poca porque el mechón fino se clasifica mal.
 
+## 6j. Todo desde la interfaz (2026-11-19)
+
+Petición del usuario: crear personajes desde la interfaz gráfica, además de por línea de comandos. Solo Fedora.
+
+- **Rutas completas** en `src/pipeline.rs`: `from_image` y `from_ai_mesh`. Las usan la interfaz y los comandos `imagen` y `preparar`, y cuentan su avance con un callback.
+  - `from_ai_mesh` reduce con Blender las mallas de más de 160 000 triángulos a 80 000 (`tools/blender/decimate.py`), si Blender está instalado.
+  - Probado con la malla original de la de pelo turquesa (647 166 triángulos): 106 s hasta el personaje con capas, rig, mechones, ojos y boca.
+- **Interfaz.** En el panel izquierdo, «Crear» tiene «Personaje desde imagen…» y «Preparar malla de IA…».
+  - El proceso va en un hilo aparte y la ventana sigue funcionando.
+  - La barra de estado y la ventana «Proceso» enseñan el avance. Al terminar, la ventana muestra el recorte y el análisis, y el personaje se abre en el visor sin archivo: se guarda con «Guardar proyecto…» o «Exportar…».
+- Los recursos (`assets/`, `tools/`) se buscan en la carpeta actual o en la del proyecto, así que la app se puede lanzar desde cualquier sitio.
+- `--desde-imagen IMAGEN` en las capturas lanza el mismo proceso que el botón y espera. Comprobado lanzando desde `/tmp`.
+- `scripts/instalar.sh`: solo Fedora.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

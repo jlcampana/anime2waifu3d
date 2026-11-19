@@ -13,6 +13,24 @@ use std::path::Path;
 /// Expresiones de la cara en el visor.
 pub const EXPRESSIONS: &[&str] = &["neutral", "parpadeo", "guiño izq", "guiño der", "feliz", "sonrisa", "contenta", "gatito", "puchero", "sorpresa", "hablar"];
 
+/// Un proceso largo en segundo plano (ruta desde imagen o malla de IA).
+struct Job {
+    title: String,
+    receiver: std::sync::mpsc::Receiver<JobMessage>,
+    started: std::time::Instant,
+}
+
+enum JobMessage {
+    Line(String),
+    Done(Result<JobOutput>),
+}
+
+pub struct JobOutput {
+    pub model: Model,
+    /// Imágenes del proceso para enseñarlas (recorte, análisis…).
+    pub images: Vec<(String, image::RgbaImage)>,
+}
+
 pub struct App {
     pub ctx: RenderContext,
     pub egui_ctx: egui::Context,
@@ -51,6 +69,11 @@ pub struct App {
     sim_time: f32,
     sim_accum: f32,
     pub status: String,
+    job: Option<Job>,
+    /// Lo que ha ido contando el último proceso, sus imágenes y si se ve su ventana.
+    pub job_log: Vec<String>,
+    pub job_images: Vec<(String, egui::TextureHandle)>,
+    pub show_job_window: bool,
 }
 
 impl App {
@@ -90,6 +113,10 @@ impl App {
             auto_blink: true,
             sim_time: 0.0,
             sim_accum: 0.0,
+            job: None,
+            job_log: Vec::new(),
+            job_images: Vec::new(),
+            show_job_window: false,
             status: "Arrastra un modelo .glb, .gltf o .vrm a la ventana, o usa Abrir modelo".into(),
         }
     }
@@ -107,6 +134,13 @@ impl App {
 
     fn try_open(&mut self, path: &Path) -> Result<()> {
         let model = Model::load(path)?;
+        self.set_model(model, Some(path));
+        Ok(())
+    }
+
+    /// Pone un modelo en el visor (abierto de un archivo o recién creado: entonces sin ruta, y
+    /// "Guardar proyecto" pregunta dónde).
+    pub fn set_model(&mut self, model: Model, path: Option<&Path>) {
         self.scene.set_model(&self.ctx.device, &self.ctx.queue, &model);
         self.status = format!(
             "{}: {} capas, {} triángulos, {} texturas",
@@ -121,7 +155,7 @@ impl App {
         self.hair = crate::hair::HairSim::new(&model);
         let project = crate::project::read(&model);
         self.model = Some(model);
-        self.path = Some(path.to_path_buf());
+        self.path = path.map(Path::to_path_buf);
         self.frame(Shot::Full);
         match project {
             Some(project) => {
@@ -130,7 +164,95 @@ impl App {
             }
             None => self.settle(),
         }
-        Ok(())
+    }
+
+    /// Lanza en segundo plano la ruta desde imagen con esa ilustración.
+    pub fn start_from_image(&mut self, image: std::path::PathBuf) {
+        let title = format!("Personaje desde {}", image.file_name().and_then(|n| n.to_str()).unwrap_or("la imagen"));
+        self.start_job(title, move |progress| {
+            let result = crate::pipeline::from_image(&image, &crate::pipeline::default_base(), progress)?;
+            Ok(JobOutput { model: result.model, images: vec![("Sin fondo".into(), result.cutout), ("Partes y proporciones".into(), result.analysis)] })
+        });
+    }
+
+    /// Lanza en segundo plano la ruta de mallas de IA con esa malla.
+    pub fn start_from_ai_mesh(&mut self, mesh: std::path::PathBuf) {
+        let title = format!("Preparando {}", mesh.file_name().and_then(|n| n.to_str()).unwrap_or("la malla"));
+        self.start_job(title, move |progress| {
+            let model = crate::pipeline::from_ai_mesh(&mesh, &crate::pipeline::default_base(), &[], progress)?;
+            Ok(JobOutput { model, images: Vec::new() })
+        });
+    }
+
+    fn start_job(&mut self, title: String, work: impl FnOnce(&dyn Fn(String)) -> Result<JobOutput> + Send + 'static) {
+        if self.job.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let repaint = self.egui_ctx.clone();
+        std::thread::spawn(move || {
+            let lines = sender.clone();
+            let progress = move |line: String| {
+                let _ = lines.send(JobMessage::Line(line));
+                repaint.request_repaint();
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&progress)))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("el proceso falló de forma inesperada")));
+            let _ = sender.send(JobMessage::Done(result));
+        });
+        self.status = format!("{title}…");
+        self.job_log = vec![title.clone()];
+        self.job_images.clear();
+        self.show_job_window = true;
+        self.job = Some(Job { title, receiver, started: std::time::Instant::now() });
+    }
+
+    /// Recoge lo que haya mandado el proceso en marcha; al terminar, pone el personaje en el
+    /// visor y las imágenes del proceso en su ventana.
+    pub fn poll_job(&mut self) {
+        let Some(job) = &self.job else { return };
+        let mut done = None;
+        while let Ok(message) = job.receiver.try_recv() {
+            match message {
+                JobMessage::Line(line) => {
+                    self.status = format!("{}: {}", job.title, line.trim());
+                    self.job_log.push(line);
+                }
+                JobMessage::Done(result) => done = Some(result),
+            }
+        }
+        let Some(result) = done else { return };
+        let seconds = job.started.elapsed().as_secs_f32();
+        let title = job.title.clone();
+        self.job = None;
+        match result {
+            Ok(output) => {
+                self.job_images = output
+                    .images
+                    .into_iter()
+                    .map(|(name, image)| {
+                        let size = [image.width() as usize, image.height() as usize];
+                        let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+                        let texture = self.egui_ctx.load_texture(name.clone(), color, egui::TextureOptions::LINEAR);
+                        (name, texture)
+                    })
+                    .collect();
+                self.set_model(output.model, None);
+                let line = format!("{title}: listo en {seconds:.0} s. Guárdalo con «Guardar proyecto» o «Exportar».");
+                self.job_log.push(line.clone());
+                self.status = line;
+            }
+            Err(error) => {
+                let line = format!("{title}: error: {error:#}");
+                self.job_log.push(line.clone());
+                self.status = line;
+            }
+        }
+    }
+
+    /// El proceso en marcha: su título y los segundos que lleva.
+    pub fn job_running(&self) -> Option<(&str, f32)> {
+        self.job.as_ref().map(|j| (j.title.as_str(), j.started.elapsed().as_secs_f32()))
     }
 
     /// El estado de la app, para guardarlo con el proyecto.
@@ -583,6 +705,9 @@ pub struct Options {
     pub expression: Option<String>,
     /// Guarda el proyecto tras aplicar las opciones (para probar sin ventana).
     pub save_project: Option<std::path::PathBuf>,
+    /// Crea el personaje desde esta imagen con el mismo proceso que el botón de la interfaz
+    /// (en segundo plano) y espera a que acabe.
+    pub from_image: Option<std::path::PathBuf>,
     /// Física propia de capas de pelo: (parte del nombre, juego de valores).
     pub hair_layers: Vec<(String, String)>,
 }
@@ -628,6 +753,7 @@ impl Options {
                 "--no-hair" => options.no_hair = true,
                 "--expression" => options.expression = Some(value()?),
                 "--save-project" => options.save_project = Some(value()?.into()),
+                "--desde-imagen" => options.from_image = Some(value()?.into()),
                 "--hair-layer" => {
                     let v = value()?;
                     let (layer, preset) = v.rsplit_once('=').ok_or_else(|| anyhow::anyhow!("--hair-layer es capa=valores"))?;
@@ -643,6 +769,14 @@ impl Options {
     pub fn apply(&self, app: &mut App) {
         if let Some(path) = &self.model {
             app.open(path);
+        }
+        if let Some(image) = &self.from_image {
+            app.start_from_image(image.clone());
+            while app.job_running().is_some() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                app.poll_job();
+            }
+            println!("{}", app.job_log.join("\n"));
         }
         if let Some(mode) = self.mode {
             app.view.mode = mode;

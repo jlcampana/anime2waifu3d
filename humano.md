@@ -44,13 +44,15 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 
 ### Ruta desde imagen (rama `ruta-imagen`)
 
-- [ ] Prueba a crear un personaje desde una imagen:
+- [ ] Prueba a crear un personaje desde la interfaz:
   ```bash
   git checkout ruta-imagen
-  cargo run --release -- imagen TU_IMAGEN.png personaje.glb
-  cargo run --release -- personaje.glb
+  cargo run --release
   ```
-  Tarda unos 25 s. Al lado de `personaje.glb` deja `personaje_recorte.png` y `personaje_analisis.png`: si sale raro, ahí se ve por qué.
+  - En el panel izquierdo, «Personaje desde imagen…»: eliges una ilustración y en unos 25 s el personaje aparece en el visor. La ventana «Proceso» enseña el avance, el recorte y el análisis; si sale raro, ahí se ve por qué.
+  - «Preparar malla de IA…» hace lo mismo con una malla de una pieza (SupaVoxel): unos 2 minutos.
+  - Después lo guardas con «Guardar proyecto…» o lo exportas con «Exportar…».
+  - Por línea de comandos sigue funcionando todo (`imagen`, `preparar`, `export`…).
 
   Mejor resultado con:
   - un personaje de cuerpo entero, de pie y de frente;
@@ -98,16 +100,12 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 
 ## 5. Al final del proyecto
 
-- [ ] **Script de instalación (hecho):** `scripts/instalar.sh` instala lo necesario en Fedora o en Ubuntu/Debian y compila:
+- [ ] **Script de instalación (hecho, solo Fedora):** `scripts/instalar.sh` instala con dnf lo necesario y compila:
   - Rust;
-  - Vulkan y las bibliotecas de ventana;
+  - Vulkan;
   - ONNX Runtime;
   - los modelos y Base_Female.
 
-  Opciones: `--con-blender` (para FBX), `--sin-modelos` y `--simular`, que enseña lo que haría sin hacerlo.
-  - En Fedora lo he comprobado en modo simulación.
-  - **En Ubuntu está sin probar:** ONNX Runtime se saca del paquete oficial de PyPI y no me dejaron descargarlo y ejecutarlo aquí para comprobarlo. Si lo usas en Ubuntu, dime si funciona.
-  - El repositorio de ONNX Runtime ya no está en `github.com/microsoft/onnxruntime`; por eso uso PyPI.
-
+  Opciones: `--con-blender` (FBX y reducir mallas de IA densas), `--sin-modelos` y `--simular`. Lo he comprobado en modo simulación.
 - [ ] Revisar la documentación de la nueva interfaz que escribiré en `/home/pandi/Projects/doa.player`, para adaptarla allí. Es el último paso.
 - [ ] Decidir si quieres el modo low poly (estilo del vídeo de Grok de Nagatoro) como opción del producto final.
