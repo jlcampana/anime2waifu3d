@@ -2,7 +2,16 @@
 
 Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú puedes conseguir y permisos. Marca con `[x]` lo que vayas cerrando. Lo técnico lo voy haciendo yo; el registro está en `docs/investigacion.md`.
 
-Última actualización: 2026-11-18.
+Última actualización: 2026-11-19.
+
+## 0. Antes de continuar: hoja de ruta V2
+
+Tras [FRACASO.md](./fracaso/FRACASO.md), la propuesta está en [HOJA_RUTA_V2.md](./HOJA_RUTA_V2.md) (rama `ruta-v2`).
+
+- [ ] Leer la hoja de ruta y aceptar o cambiar la regla nueva: «local salvo la generación de la malla, a elección del usuario».
+- [ ] Elegir qué servicios pruebas en la fase 1 (Tripo, Meshy, Hunyuan3D, TRELLIS, Rodin) y crear cuenta.
+- [ ] Juntar imágenes de prueba de **personajes adultos**: al menos una de cuerpo entero de frente y una de espaldas. Las de Marin de `fracaso/origen.png` no valen; mejor borrarlas.
+- [ ] Confirmar el orden de carpetas del diálogo de archivos (fase 0).
 
 ## 1. Probar lo que ya está hecho
 
