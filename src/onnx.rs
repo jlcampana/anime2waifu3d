@@ -15,11 +15,14 @@ fn runtime_library() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("ORT_DYLIB_PATH") {
         return Ok(PathBuf::from(path));
     }
-    ["/usr/lib64/libonnxruntime.so", "/usr/lib64/libonnxruntime.so.1", "/usr/lib/x86_64-linux-gnu/libonnxruntime.so", "/usr/lib/libonnxruntime.so"]
+    // La del sistema (Fedora) o la que deja `scripts/instalar.sh` en Ubuntu.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let local = format!("{home}/.local/lib/anime2waifu3d/libonnxruntime.so.1");
+    ["/usr/lib64/libonnxruntime.so", "/usr/lib64/libonnxruntime.so.1", "/usr/lib/x86_64-linux-gnu/libonnxruntime.so", "/usr/lib/libonnxruntime.so", local.as_str()]
         .iter()
         .map(PathBuf::from)
         .find(|p| p.exists())
-        .context("no se encuentra ONNX Runtime: instálalo con `sudo dnf install onnxruntime` (Fedora) o indica la biblioteca en ORT_DYLIB_PATH")
+        .context("no se encuentra ONNX Runtime: ejecuta scripts/instalar.sh (o `sudo dnf install onnxruntime` en Fedora), o indica la biblioteca en ORT_DYLIB_PATH")
 }
 
 /// La imagen como entrada 1×3×alto×ancho, sobre blanco donde es transparente, normalizada con

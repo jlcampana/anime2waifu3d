@@ -42,6 +42,27 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 - [ ] Prueba a guardar un proyecto (Ctrl+S), cerrarlo y volver a abrirlo. También a exportar con "Exportar…" y abrir el resultado en Blender.
 - [ ] Dime lo que veas mal o raro, con el modelo, la pose o la animación, y la zona. Si puedes, añade una captura.
 
+### Ruta desde imagen (rama `ruta-imagen`)
+
+- [ ] Prueba a crear un personaje desde una imagen:
+  ```bash
+  git checkout ruta-imagen
+  cargo run --release -- imagen TU_IMAGEN.png personaje.glb
+  cargo run --release -- personaje.glb
+  ```
+  Tarda unos 25 s. Al lado de `personaje.glb` deja `personaje_recorte.png` y `personaje_analisis.png`: si sale raro, ahí se ve por qué.
+
+  Mejor resultado con:
+  - un personaje de cuerpo entero, de pie y de frente;
+  - con los brazos algo separados del cuerpo;
+  - con fondo sencillo y en color;
+  - **no sexual**.
+
+  El ejemplo es `assets/resultados/imagen_a_3d.png` (Nagatoro).
+- [ ] **Imágenes de prueba:** necesito varias ilustraciones de cuerpo entero así, para ajustar el proceso. Ahora solo tengo una (Nagatoro 1).
+  - Las de `assets/prueba` (Marin) no las he usado: son sexuales y el personaje es menor en la obra.
+  - Valen personajes adultos o imágenes no sexuales, por ejemplo hojas de personaje (*character sheets*) o imágenes oficiales de cuerpo entero.
+
 ## 2. Decisiones que necesito
 
 - [x] **Siguiente bloque grande.** Lo que has decidido:
@@ -77,7 +98,16 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 
 ## 5. Al final del proyecto
 
-- [ ] Ejecutar el script de instalación de dependencias que prepararé (pediste uno que lo instale todo). Instalará: Rust, las bibliotecas del sistema, `onnxruntime`, Blender (opcional, para FBX) y los modelos de `assets/modelos/`.
+- [ ] **Script de instalación (hecho):** `scripts/instalar.sh` instala lo necesario en Fedora o en Ubuntu/Debian y compila:
+  - Rust;
+  - Vulkan y las bibliotecas de ventana;
+  - ONNX Runtime;
+  - los modelos y Base_Female.
+
+  Opciones: `--con-blender` (para FBX), `--sin-modelos` y `--simular`, que enseña lo que haría sin hacerlo.
+  - En Fedora lo he comprobado en modo simulación.
+  - **En Ubuntu está sin probar:** ONNX Runtime se saca del paquete oficial de PyPI y no me dejaron descargarlo y ejecutarlo aquí para comprobarlo. Si lo usas en Ubuntu, dime si funciona.
+  - El repositorio de ONNX Runtime ya no está en `github.com/microsoft/onnxruntime`; por eso uso PyPI.
 
 - [ ] Revisar la documentación de la nueva interfaz que escribiré en `/home/pandi/Projects/doa.player`, para adaptarla allí. Es el último paso.
 - [ ] Decidir si quieres el modo low poly (estilo del vídeo de Grok de Nagatoro) como opción del producto final.
