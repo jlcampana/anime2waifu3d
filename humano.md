@@ -49,13 +49,14 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
   git checkout ruta-imagen
   cargo run --release
   ```
+  - Los diálogos ya no dan «no responde» (comprobado por ti el 2026-11-19).
   - En el panel izquierdo, «Personaje desde imagen…»: eliges una o **varias ilustraciones del mismo personaje** (unos 25 s cada una) y el personaje aparece en el visor.
     - La mejor de frente y de cuerpo entero da la figura y el frente.
     - Las proporciones son la media de todas las de frente.
     - Una de espaldas pinta la espalda y el pelo de detrás. La ventana «Proceso» enseña el avance, el recorte y el análisis; si sale raro, ahí se ve por qué.
   - «Preparar malla de IA…» hace lo mismo con una malla de una pieza (SupaVoxel): unos 2 minutos.
   - Después lo guardas con «Guardar proyecto…» o lo exportas con «Exportar…».
-  - Los paneles «Vista» y «Capas» tienen «↗ Sacar a otra ventana»: pasan a una ventana propia que puedes llevar fuera de la aplicación. Vuelven con «↙ Volver…» o cerrando esa ventana. **No lo he podido ver en pantalla: dime si funciona.**
+  - Los paneles «Vista» y «Capas» tienen «↗ Sacar a otra ventana»: pasan a una ventana propia que puedes llevar fuera de la aplicación. Vuelven con «↙ Volver…» o cerrando esa ventana. Comprobado por ti el 2026-11-19: sale y vuelve bien.
   - Por línea de comandos sigue funcionando todo (`imagen`, `preparar`, `export`…).
 
   Mejor resultado con:
