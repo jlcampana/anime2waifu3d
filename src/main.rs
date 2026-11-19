@@ -2,6 +2,7 @@ mod analyze;
 mod app;
 mod cutout;
 mod depth;
+mod dress;
 mod export_glb;
 mod face;
 mod fit;
@@ -636,21 +637,40 @@ fn run_image(args: &[String]) -> anyhow::Result<()> {
     let stem = output.with_extension("");
     let start = std::time::Instant::now();
     let image = image::open(input)?.to_rgba8();
-    println!("1/4 quitando el fondo…");
+    println!("1/6 quitando el fondo…");
     let cut = cutout::cut(&image, &cutout::default_model())?;
     cut.save(format!("{}_recorte.png", stem.display()))?;
-    println!("2/4 analizando partes y proporciones…");
+    println!("2/6 analizando partes y proporciones…");
     let analysis = analyze::analyze(&cut)?;
     analyze::debug_image(&cut, &analysis).save(format!("{}_analisis.png", stem.display()))?;
     let k = &analysis.keypoints;
     println!("    {:.1} cabezas de alto{}", k.heads_tall, if analysis.skin_by_color { "" } else { " (piel no distinguible: alturas supuestas)" });
-    println!("3/4 ajustando el cuerpo base…");
+    println!("3/6 ajustando el cuerpo base…");
     let mut model = model::Model::load(&base)?;
     model.name = stem.file_name().and_then(|s| s.to_str()).unwrap_or("personaje").to_string();
     let adjusted = fit::fit(&mut model, k)?;
     println!("    cabeza x{:.2}, hombros x{:.2}, cintura x{:.2}", adjusted.head, adjusted.shoulders, adjusted.waist);
-    println!("4/4 pintando la imagen…");
-    fit::project(&mut model, &cut, k, &adjusted)?;
+    println!("4/6 pintando la imagen…");
+    let projection = fit::project(&mut model, &cut, &analysis, &adjusted)?;
+    // La cara de Base_Female, como piel para buscar ojos y boca.
+    for layer in &mut model.layers {
+        if layer.name.eq_ignore_ascii_case("face") {
+            layer.name = "piel cara".into();
+        }
+    }
+    println!("5/6 cara: párpados y boca…");
+    print_face(face::rig_face(&mut model));
+    println!("6/6 pelo y falda…");
+    match dress::add_hair(&mut model, &cut, &analysis, &projection) {
+        Ok((cap, sheets)) => println!("    pelo: {cap} triángulos de casquete, {sheets} de melena"),
+        Err(error) => println!("    sin pelo: {error:#}"),
+    }
+    print_hair(&hair::rig_hair(&mut model)?);
+    match dress::add_skirt(&mut model, &analysis, &projection)? {
+        0 => println!("    sin falda"),
+        rows => println!("    falda de {rows} filas de la imagen"),
+    }
+    print_hair(&hair::rig_skirt(&mut model)?);
     export_glb::write(&model, output)?;
     println!("-> {} en {:.1} s", output.display(), start.elapsed().as_secs_f32());
     Ok(())

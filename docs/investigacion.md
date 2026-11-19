@@ -336,6 +336,39 @@ Implementado en `src/fit.rs`, con el comando completo `anime2waifu3d imagen IMAG
   - Falda como cono con física.
   - Usar la profundidad.
 
+## 6i. Ruta desde imagen, pasos 4 y 5: pelo, falda, brazos, piernas y cara (2026-11-19)
+
+El comando `imagen` hace ahora seis pasos: recorte, análisis, ajuste, pintura, cara, y pelo y falda.
+
+- **Brazos y piernas** (`fit::project`).
+  - Antes de pintar se prueban ángulos por brazo (de 80° a 5° bajo la horizontal) y por pierna (abiertas de 0° a 15°).
+  - Gana el que pone más vértices sobre piel o ropa de la imagen.
+  - El modelo queda en T; solo cambia la proyección.
+- **Texturas.**
+  - Cuerpo: la imagen con el pelo de debajo de la barbilla borrado.
+  - Pelo: la imagen entera.
+  - Lo de fuera de la silueta se rellena desde el interior, ignorando unos píxeles de borde: la línea negra del dibujo pintaba de negro lo que el cuerpo 3D tiene fuera de la silueta, como las piernas más anchas.
+- **Pelo** (`src/dress.rs`).
+  - **Casquete:** el cráneo donde la imagen es pelo, más la parte de atrás y la nuca, 5 % de cabeza hacia fuera.
+  - **Melena:** una rejilla sobre la máscara de pelo por debajo de los ojos, con dos láminas y paredes. Va delante del cuerpo donde lo tapa, y detrás del plano de la cabeza y más gruesa donde cae por los lados.
+  - **Cortina por la espalda:** desde la barbilla. Si el pelo llega a los hombros, se supone que baja al menos una cabeza más.
+  - Después `hair::rig_hair` le pone mechones, cadenas y física.
+- **Falda:** un cono de anillos desde donde la silueta se ensancha bajo la cintura hasta donde la ropa deja de ocupar el 85 % de la fila.
+  - Cada anillo tiene el ancho de la silueta sin meterse en las piernas.
+  - Su textura se reparte sobre el ancho de la falda dibujada en esa fila.
+  - Después `hair::rig_skirt` le pone cadenas.
+- **Cara:** la capa Face de Base_Female pasa a "piel cara" y se aplica `face::rig_face`. Para estas caras la búsqueda de ojos tiene un segundo intento:
+  - sin contar lo del color del pelo, porque las pestañas se pegan al flequillo pintado;
+  - admitiendo cabezas inclinadas;
+  - rechazando ojos de menos del 15 % de su separación.
+  - En los tres modelos de SupaVoxel sigue saliendo lo mismo.
+- **Resultado con Nagatoro de cuerpo entero:**
+  - Piernas, zapatos blancos y espalda limpios.
+  - Melena por detrás, que se mueve con el viento.
+  - Falda azul con volumen.
+  - Párpados y boca.
+  - Pendiente: la cortina de la espalda es rectangular; el brazo en jarra no se reproduce; la melena de los lados es poca, porque el mechón fino se clasifica mal.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:

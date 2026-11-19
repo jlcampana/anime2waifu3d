@@ -249,7 +249,13 @@ fn face_raster(model: &Model) -> Result<(Raster, f32, Vec3)> {
 }
 
 /// Busca los ojos. Devuelve también la rejilla, el tamaño de la cabeza y el color de la piel.
+/// Primero con criterios estrictos; si no, sin contar lo del color del pelo (pestañas pegadas al
+/// flequillo) y admitiendo cabezas inclinadas.
 fn find_eyes(model: &Model) -> Result<(Vec<Eye>, Raster, f32, [f32; 3])> {
+    find_eyes_with(model, false).or_else(|_| find_eyes_with(model, true))
+}
+
+fn find_eyes_with(model: &Model, relaxed: bool) -> Result<(Vec<Eye>, Raster, f32, [f32; 3])> {
     let (raster, size, head_pos) = face_raster(model)?;
 
     // Piel: la mediana de lo que viene de capas de piel.
@@ -273,7 +279,29 @@ fn find_eyes(model: &Model) -> Result<(Vec<Eye>, Raster, f32, [f32; 3])> {
         best.0
     };
     let is_skin = |x: usize, y: usize| raster.get(x, y).is_some_and(|c| lab(c.color).distance(skin_lab) < 18.0);
-    let is_mark = |x: usize, y: usize| raster.get(x, y).is_some_and(|c| lab(c.color).distance(skin_lab) > 30.0);
+    // Color del pelo: la mediana de lo que no es piel en la frente y lo de arriba. Lo que se le
+    // parece no cuenta como marca: así las pestañas no unen los ojos al flequillo pintado.
+    let mut top_marks: Vec<Vec3> = raster
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| c.is_some_and(|c| lab(c.color).distance(skin_lab) > 30.0) && raster.point_of(i % GRID, i / GRID).y > head_pos.y + 0.75 * size)
+        .map(|(_, c)| lab(c.unwrap().color))
+        .collect();
+    let hair_lab = (relaxed && top_marks.len() >= 50).then(|| {
+        let mid = top_marks.len() / 2;
+        let mut channel = |k: usize| {
+            top_marks.sort_by(|a, b| a[k].total_cmp(&b[k]));
+            top_marks[mid][k]
+        };
+        Vec3::new(channel(0), channel(1), channel(2))
+    });
+    let is_mark = |x: usize, y: usize| {
+        raster.get(x, y).is_some_and(|c| {
+            let l = lab(c.color);
+            l.distance(skin_lab) > 30.0 && hair_lab.map_or(true, |h| l.distance(h) > 20.0)
+        })
+    };
 
     // Manchas que no son piel, con lo rodeadas de piel que están.
     struct Blob {
@@ -376,7 +404,8 @@ fn find_eyes(model: &Model) -> Result<(Vec<Eye>, Raster, f32, [f32; 3])> {
     // La mejor pareja: una mancha a cada lado del centro, a alturas parecidas, simétricas y en la
     // franja de los ojos; cuenta su tamaño y lo rodeadas de piel que están.
     // Un ojo: ni raya vertical (sombras del cuello) ni ceja plana, bastante rodeado de piel.
-    let eye_like = |b: &Blob| (0.3..=1.6).contains(&b.aspect) && b.enclosed >= 0.12;
+    let tallest = if relaxed { 1.8 } else { 1.6 };
+    let eye_like = |b: &Blob| (0.3..=tallest).contains(&b.aspect) && b.enclosed >= 0.12;
     let score = |b: &Blob| b.cells.len() as f32 * b.enclosed.powi(2) * (1.0 + b.chroma / 30.0);
     let mut best: Option<(f32, usize, usize)> = None;
     for (i, a) in blobs.iter().enumerate() {
@@ -396,7 +425,7 @@ fn find_eyes(model: &Model) -> Result<(Vec<Eye>, Raster, f32, [f32; 3])> {
             let level = (a.centre.y - b.centre.y).abs() / size;
             let mirror = (da + db).abs() / size;
             let ratio = a.cells.len().min(b.cells.len()) as f32 / a.cells.len().max(b.cells.len()) as f32;
-            if level > 0.12 || mirror > 0.2 || ratio < 0.3 {
+            if level > if relaxed { 0.2 } else { 0.12 } || mirror > 0.2 || ratio < 0.3 {
                 continue;
             }
             let s = (score(a) + score(b)) * (1.0 - level * 4.0) * (1.0 - mirror * 3.0);
@@ -428,6 +457,9 @@ fn find_eyes(model: &Model) -> Result<(Vec<Eye>, Raster, f32, [f32; 3])> {
     // Los ojos son simétricos: los dos con el tamaño del menor (el otro suele llevar pegado algo
     // de ceja o de pelo), y a la altura media.
     let radius = found[0].radius.min(found[1].radius);
+    // Ojos de menos de una décima de su separación son manchas, no ojos.
+    let spacing = (found[0].centre.x - found[1].centre.x).abs();
+    anyhow::ensure!(radius.x * 2.0 >= spacing * 0.15, "los ojos encontrados son demasiado pequeños");
     let mut found = found;
     for eye in &mut found {
         eye.radius = radius;

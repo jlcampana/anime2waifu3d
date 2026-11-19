@@ -223,12 +223,34 @@ pub fn fit(model: &mut Model, k: &Keypoints) -> Result<Fit> {
     Ok(Fit { scale, head, shoulders: s_shoulders, waist: s_waist })
 }
 
-/// La imagen sin huecos: lo transparente toma el color opaco más cercano (por capas, desde el
-/// borde) y queda opaco.
-fn fill_background(image: &RgbaImage) -> RgbaImage {
+/// La imagen sin huecos: lo que no es `keep` toma el color conservado más cercano (por capas,
+/// desde el borde) y todo queda opaco.
+fn fill(image: &RgbaImage, keep: &[bool]) -> RgbaImage {
     let (w, h) = (image.width() as i32, image.height() as i32);
     let mut out = image.clone();
-    let mut known: Vec<bool> = image.pixels().map(|p| p[3] > 128).collect();
+    // Sin el borde de lo conservado: en las ilustraciones es la línea del dibujo, y extenderla
+    // pinta de negro lo que el cuerpo 3D tenga fuera de la silueta.
+    let mut known = keep.to_vec();
+    let margin = ((w.max(h) as f32) * 0.004).ceil().max(2.0) as usize;
+    for _ in 0..margin {
+        let previous = known.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) as usize;
+                if previous[i] {
+                    let edge = [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| {
+                        let (nx, ny) = (x + dx, y + dy);
+                        nx < 0 || ny < 0 || nx >= w || ny >= h || !previous[(ny * w + nx) as usize]
+                    });
+                    if edge {
+                        known[i] = false;
+                    }
+                }
+            }
+        }
+    }
+    // Lo de dentro de la silueta que se ha quitado con el borde vuelve a ser el de la imagen.
+    let interior = known.clone();
     for _ in 0..(w.max(h)) {
         let previous = out.clone();
         let was = known.clone();
@@ -262,38 +284,176 @@ fn fill_background(image: &RgbaImage) -> RgbaImage {
             break;
         }
     }
-    for p in out.pixels_mut() {
+    // La silueta conserva su dibujo (también su línea); solo lo de fuera usa el relleno.
+    for (i, p) in out.pixels_mut().enumerate() {
+        if keep[i] && !interior[i] {
+            let original = image.get_pixel((i % w as usize) as u32, (i / w as usize) as u32);
+            p[0] = original[0];
+            p[1] = original[1];
+            p[2] = original[2];
+        }
         p[3] = 255;
     }
     out
 }
 
-/// Pinta la imagen sobre el modelo ajustado por proyección frontal, con los brazos caídos.
-pub fn project(model: &mut Model, image: &RgbaImage, k: &Keypoints, fit: &Fit) -> Result<()> {
-    let skeleton = model.skeleton.as_ref().context("el modelo no tiene esqueleto")?;
-    // Brazos caídos junto al cuerpo, como suelen estar en las ilustraciones.
-    let mut local = vec![Quat::IDENTITY; skeleton.bones.len()];
-    for (bone, child, side) in [("leftUpperArm", "leftLowerArm", 1.0f32), ("leftLowerArm", "leftHand", 1.0), ("rightUpperArm", "rightLowerArm", -1.0), ("rightLowerArm", "rightHand", -1.0)] {
-        if let (Some(b), Some(c)) = (skeleton.bone(bone), skeleton.bone(child)) {
-            crate::pose::aim(skeleton, &mut local, b, c, Vec3::new(0.18 * side, -1.0, 0.0));
-        }
+/// Cómo se pasa del modelo a la imagen (y al revés) en la proyección frontal, y la pose con la
+/// que se proyectó (brazos como en la imagen).
+pub struct Projection {
+    pub scale: f32,
+    pub centre_x: f32,
+    pub feet_row: f32,
+    pub feet_y: f32,
+    pub width: u32,
+    pub height: u32,
+    pub local: Vec<Quat>,
+}
+
+impl Projection {
+    /// Píxel (columna, fila) de un punto del modelo.
+    pub fn pixel(&self, p: Vec3) -> (f32, f32) {
+        (self.centre_x + p.x / self.scale, self.feet_row - (p.y - self.feet_y) / self.scale)
     }
-    let posed = crate::pose::skin_model(model, &local, &[]);
-    let feet = model.layers.iter().flat_map(|l| l.primitives.iter()).flat_map(|p| p.vertices.iter()).map(|v| v.position[1]).fold(f32::MAX, f32::min);
-    let (w, h) = (image.width() as f32, image.height() as f32);
+
+    /// Punto del modelo (x, y) de un píxel.
+    pub fn point(&self, column: f32, row: f32) -> (f32, f32) {
+        ((column - self.centre_x) * self.scale, self.feet_y + (self.feet_row - row) * self.scale)
+    }
+
+    pub fn uv(&self, p: Vec3) -> [f32; 2] {
+        let (c, r) = self.pixel(p);
+        [c / self.width as f32, r / self.height as f32]
+    }
+}
+
+/// Pinta la imagen sobre el modelo ajustado por proyección frontal. Antes elige, para cada brazo,
+/// el ángulo con el que sus vértices caen sobre más piel o ropa de la imagen (no pelo ni fondo).
+/// El cuerpo se pinta con el pelo de debajo de la barbilla borrado (lo pone el paso del pelo).
+pub fn project(model: &mut Model, image: &RgbaImage, analysis: &crate::analyze::Analysis, fit: &Fit) -> Result<Projection> {
+    use crate::analyze::Part;
+    let k = &analysis.keypoints;
+    let skeleton = model.skeleton.as_ref().context("el modelo no tiene esqueleto")?;
+    let regions = regions(skeleton);
+    let feet_y = model.layers.iter().flat_map(|l| l.primitives.iter()).flat_map(|p| p.vertices.iter()).map(|v| v.position[1]).fold(f32::MAX, f32::min);
+    let mut projection = Projection {
+        scale: fit.scale,
+        centre_x: k.centre_x,
+        feet_row: k.feet as f32,
+        feet_y,
+        width: image.width(),
+        height: image.height(),
+        local: vec![Quat::IDENTITY; skeleton.bones.len()],
+    };
+    let label_at = |c: f32, r: f32| -> Part {
+        if c < 0.0 || r < 0.0 || c >= image.width() as f32 || r >= image.height() as f32 {
+            return Part::Fondo;
+        }
+        analysis.labels[r as usize * image.width() as usize + c as usize]
+    };
+    // Brazos: ángulos bajo la horizontal, de casi colgando a casi en cruz.
+    for side in [1.0f32, -1.0] {
+        let (upper, lower, hand) = if side > 0.0 { ("leftUpperArm", "leftLowerArm", "leftHand") } else { ("rightUpperArm", "rightLowerArm", "rightHand") };
+        let (Some(u), Some(l), Some(hd)) = (skeleton.bone(upper), skeleton.bone(lower), skeleton.bone(hand)) else { continue };
+        let mut best = (f32::MIN, projection.local.clone());
+        for degrees in [80.0f32, 65.0, 50.0, 35.0, 20.0, 5.0] {
+            let angle = degrees.to_radians();
+            let direction = Vec3::new(angle.cos() * side, -angle.sin(), 0.0);
+            let mut local = projection.local.clone();
+            crate::pose::aim(skeleton, &mut local, u, l, direction);
+            crate::pose::aim(skeleton, &mut local, l, hd, direction);
+            let posed = crate::pose::skin_model(model, &local, &[]);
+            let mut score = 0.0;
+            let mut count: f32 = 0.0;
+            for (layer, posed_layer) in model.layers.iter().zip(&posed) {
+                for (p, posed_p) in layer.primitives.iter().zip(posed_layer) {
+                    for (i, q) in posed_p.iter().enumerate() {
+                        let (j, w) = (p.joints[i], p.weights[i]);
+                        let d = (0..4).max_by(|a, b| w[*a].total_cmp(&w[*b])).unwrap_or(0);
+                        if regions[j[d] as usize] != Region::Arm(side) {
+                            continue;
+                        }
+                        let (c, r) = projection.pixel(Vec3::from(q.position));
+                        score += match label_at(c, r) {
+                            Part::Piel | Part::Ropa => 1.0,
+                            Part::Pelo | Part::Calzado => 0.0,
+                            Part::Fondo => -1.0,
+                        };
+                        count += 1.0;
+                    }
+                }
+            }
+            let score = score / count.max(1.0);
+            if score > best.0 {
+                best = (score, local);
+            }
+        }
+        projection.local = best.1;
+    }
+    // Piernas: abiertas de 0° a 15°, como en la imagen.
+    for side in [1.0f32, -1.0] {
+        let (upper, lower, foot) = if side > 0.0 { ("leftUpperLeg", "leftLowerLeg", "leftFoot") } else { ("rightUpperLeg", "rightLowerLeg", "rightFoot") };
+        let (Some(u), Some(l), Some(f)) = (skeleton.bone(upper), skeleton.bone(lower), skeleton.bone(foot)) else { continue };
+        let mut best = (f32::MIN, projection.local.clone());
+        for degrees in [0.0f32, 3.0, 6.0, 9.0, 12.0, 15.0] {
+            let angle = degrees.to_radians();
+            let direction = Vec3::new(angle.sin() * side, -angle.cos(), 0.0);
+            let mut local = projection.local.clone();
+            crate::pose::aim(skeleton, &mut local, u, l, direction);
+            crate::pose::aim(skeleton, &mut local, l, f, direction);
+            let posed = crate::pose::skin_model(model, &local, &[]);
+            let (mut score, mut count) = (0.0f32, 0.0f32);
+            for (layer, posed_layer) in model.layers.iter().zip(&posed) {
+                for (p, posed_p) in layer.primitives.iter().zip(posed_layer) {
+                    for (i, q) in posed_p.iter().enumerate() {
+                        let (j, w) = (p.joints[i], p.weights[i]);
+                        let d = (0..4).max_by(|a, b| w[*a].total_cmp(&w[*b])).unwrap_or(0);
+                        if regions[j[d] as usize] != Region::Leg(side) {
+                            continue;
+                        }
+                        let (c, r) = projection.pixel(Vec3::from(q.position));
+                        score += match label_at(c, r) {
+                            Part::Piel | Part::Ropa | Part::Calzado => 1.0,
+                            Part::Pelo => 0.0,
+                            Part::Fondo => -1.0,
+                        };
+                        count += 1.0;
+                    }
+                }
+            }
+            let score = score / count.max(1.0);
+            if score > best.0 {
+                best = (score, local);
+            }
+        }
+        projection.local = best.1;
+    }
+    let posed = crate::pose::skin_model(model, &projection.local, &[]);
     for (layer, posed_layer) in model.layers.iter_mut().zip(&posed) {
         for (p, posed_p) in layer.primitives.iter_mut().zip(posed_layer) {
             for (v, q) in p.vertices.iter_mut().zip(posed_p) {
-                let px = k.centre_x + q.position[0] / fit.scale;
-                let row = k.feet as f32 - (q.position[1] - feet) / fit.scale;
-                v.uv = [px / w, row / h];
+                v.uv = projection.uv(Vec3::from(q.position));
             }
             p.material = 0;
             p.morphs.iter_mut().for_each(|m| m.uv_deltas.clear());
         }
     }
-    let filled = fill_background(image);
-    model.textures = vec![Texture { width: filled.width(), height: filled.height(), rgba: filled.into_raw() }];
-    model.materials = vec![Material { name: "imagen".into(), base_color: [1.0; 4], texture: Some(0), alpha: AlphaMode::Opaque, double_sided: false }];
-    Ok(())
+    // Textura del cuerpo: sin el pelo de debajo de la barbilla; la del pelo, entera.
+    let w = image.width() as usize;
+    let body_keep: Vec<bool> = image
+        .pixels()
+        .enumerate()
+        .map(|(i, p)| p[3] > 128 && !(analysis.labels[i] == Part::Pelo && (i / w) as u32 > k.chin))
+        .collect();
+    let all_keep: Vec<bool> = image.pixels().map(|p| p[3] > 128).collect();
+    let body = fill(image, &body_keep);
+    let hair = fill(image, &all_keep);
+    model.textures = vec![
+        Texture { width: body.width(), height: body.height(), rgba: body.into_raw() },
+        Texture { width: hair.width(), height: hair.height(), rgba: hair.into_raw() },
+    ];
+    model.materials = vec![
+        Material { name: "cuerpo".into(), base_color: [1.0; 4], texture: Some(0), alpha: AlphaMode::Opaque, double_sided: false },
+        Material { name: "pelo".into(), base_color: [1.0; 4], texture: Some(1), alpha: AlphaMode::Opaque, double_sided: true },
+    ];
+    Ok(projection)
 }
