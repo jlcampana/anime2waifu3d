@@ -2,6 +2,9 @@ use anyhow::Result;
 use winit::window::Window;
 
 pub struct RenderContext {
+    /// La instancia y el adaptador, para abrir más ventanas (paneles sueltos) con la misma GPU.
+    pub instance: wgpu::Instance,
+    pub adapter: wgpu::Adapter,
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -65,6 +68,8 @@ impl RenderContext {
         let (depth_texture, depth_view) = create_depth_texture(&device, size.width, size.height);
 
         Ok(Self {
+            instance,
+            adapter,
             surface,
             device,
             queue,

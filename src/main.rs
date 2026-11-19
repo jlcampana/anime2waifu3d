@@ -1,17 +1,24 @@
+mod analyze;
 mod app;
+mod cutout;
+mod depth;
+mod dress;
 mod export_glb;
 mod face;
+mod fit;
 mod hair;
 mod lighting;
 mod model;
+mod onnx;
 mod physics;
+mod pipeline;
 mod pose;
 mod project;
 mod renderer;
 mod rig;
 mod segment;
 
-use app::{App, Options};
+use app::{App, Options, Panel};
 use renderer::camera::Shot;
 use renderer::scene::ViewMode;
 use renderer::RenderContext;
@@ -34,6 +41,142 @@ struct Handler {
     insets: (f32, f32),
     selected_layer: Option<usize>,
     last_frame: std::time::Instant,
+    /// Diálogo de archivo abierto (va en otro hilo para que la ventana siga respondiendo).
+    dialog: Option<Dialog>,
+    /// Paneles sacados a su propia ventana.
+    panels: Vec<PanelWindow>,
+}
+
+/// Un panel en su propia ventana del sistema: misma GPU, su superficie y su propio egui.
+struct PanelWindow {
+    kind: Panel,
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    renderer: egui_wgpu::Renderer,
+}
+
+impl PanelWindow {
+    fn new(event_loop: &ActiveEventLoop, app: &App, kind: Panel) -> anyhow::Result<Self> {
+        let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(Window::default_attributes(), "anime2waifu3d", "anime2waifu3d");
+        let attributes = winit::platform::x11::WindowAttributesExtX11::with_name(attributes, "anime2waifu3d", "anime2waifu3d");
+        let window = Arc::new(event_loop.create_window(attributes.with_title(kind.title()).with_inner_size(winit::dpi::LogicalSize::new(320u32, 860u32)))?);
+        let surface = app.ctx.instance.create_surface(window.clone())?;
+        let capabilities = surface.get_capabilities(&app.ctx.adapter);
+        let format = capabilities.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(capabilities.formats[0]);
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: capabilities.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&app.ctx.device, &config);
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_style(app.egui_ctx.style());
+        let egui_state = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), None, Some(2048));
+        let renderer = egui_wgpu::Renderer::new(&app.ctx.device, format, None, 1, false);
+        Ok(Self { kind, window, surface, config, egui_ctx, egui_state, renderer })
+    }
+
+    fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.config.width = width;
+            self.config.height = height;
+            self.surface.configure(device, &self.config);
+        }
+    }
+
+    /// Dibuja el panel. Lo que pida (diálogos, planos de cámara) se aplica a la app.
+    fn render(&mut self, app: &mut App, selected: &mut Option<usize>, dialog: &mut Option<Dialog>) {
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let ctx = self.egui_ctx.clone();
+        let (mut request, mut frame_shot) = (None, None);
+        let dialog_open = dialog.is_some();
+        let kind = self.kind;
+        let output = ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add_enabled_ui(!dialog_open, |ui| match kind {
+                        Panel::View => view_panel(ui, app, &mut request, &mut frame_shot),
+                        Panel::Layers => layers_panel(ui, app, selected),
+                    });
+                });
+            });
+        });
+        self.egui_state.handle_platform_output(&self.window, output.platform_output);
+        if let (Some(request), None) = (request, dialog.as_ref()) {
+            *dialog = Some(Dialog::open(request, app));
+        }
+        if let Some(shot) = frame_shot {
+            app.frame(shot);
+        }
+        let frame = match self.surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(_) => {
+                self.surface.configure(&app.ctx.device, &self.config);
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&Default::default());
+        let mut encoder = app.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("panel") });
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: self.window.scale_factor() as f32 };
+        for (id, delta) in &output.textures_delta.set {
+            self.renderer.update_texture(&app.ctx.device, &app.ctx.queue, *id, delta);
+        }
+        let tris = ctx.tessellate(output.shapes, output.pixels_per_point);
+        self.renderer.update_buffers(&app.ctx.device, &app.ctx.queue, &mut encoder, &tris, &screen);
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("panel"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 }), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            let mut pass = pass.forget_lifetime();
+            self.renderer.render(&mut pass, &tris, &screen);
+        }
+        for id in &output.textures_delta.free {
+            self.renderer.free_texture(id);
+        }
+        app.ctx.queue.submit([encoder.finish()]);
+        frame.present();
+    }
+}
+
+impl Handler {
+    /// Saca o devuelve los paneles que se hayan pedido.
+    fn update_panels(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(app) = &mut self.app else { return };
+        for (kind, detach) in std::mem::take(&mut app.panel_requests) {
+            let open = self.panels.iter().position(|p| p.kind == kind);
+            match (detach, open) {
+                (true, None) => match PanelWindow::new(event_loop, app, kind) {
+                    Ok(panel) => {
+                        self.panels.push(panel);
+                        app.detached[kind.index()] = true;
+                    }
+                    Err(error) => app.status = format!("No se pudo abrir la ventana del panel: {error:#}"),
+                },
+                (false, Some(i)) => {
+                    self.panels.remove(i);
+                    app.detached[kind.index()] = false;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for Handler {
@@ -95,7 +238,22 @@ impl ApplicationHandler for Handler {
         self.app = Some(app);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Eventos de una ventana de panel.
+        if let Some(i) = self.panels.iter().position(|p| p.window.id() == id) {
+            let Some(app) = &mut self.app else { return };
+            let panel = &mut self.panels[i];
+            let _ = panel.egui_state.on_window_event(&panel.window, &event);
+            match &event {
+                // Cerrar la ventana devuelve el panel a la principal.
+                WindowEvent::CloseRequested => app.panel_requests.push((panel.kind, false)),
+                WindowEvent::Resized(size) => panel.resize(&app.ctx.device, size.width, size.height),
+                WindowEvent::RedrawRequested => panel.render(app, &mut self.selected_layer, &mut self.dialog),
+                _ => {}
+            }
+            self.update_panels(event_loop);
+            return;
+        }
         let (Some(app), Some(window)) = (&mut self.app, &self.window) else { return };
         let consumed = app.egui_state.on_window_event(window, &event).consumed;
         match &event {
@@ -131,14 +289,16 @@ impl ApplicationHandler for Handler {
                 let now = std::time::Instant::now();
                 app.tick(now.duration_since(self.last_frame).as_secs_f32());
                 self.last_frame = now;
-                render_frame(app, window, &mut self.insets, &mut self.selected_layer);
+                render_frame(app, window, &mut self.insets, &mut self.selected_layer, &mut self.dialog);
                 window.request_redraw();
             }
             _ => {}
         }
+        self.update_panels(event_loop);
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.panels.clear();
         self.app = None;
         self.window = None;
     }
@@ -147,29 +307,125 @@ impl ApplicationHandler for Handler {
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+        for panel in &self.panels {
+            panel.window.request_redraw();
+        }
     }
 }
 
-fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selected: &mut Option<usize>) {
+/// Diálogos de archivo que pide la interfaz.
+#[derive(Clone, Copy, PartialEq)]
+enum Request {
+    Open,
+    /// Una o varias ilustraciones del mismo personaje.
+    FromImage,
+    FromMesh,
+    SaveProject,
+    Export(project::Format, bool),
+}
+
+/// Un diálogo de archivo abierto en otro hilo: el portal de escritorio puede tardar lo que el
+/// usuario quiera, y si espera el hilo de la ventana, GNOME la da por colgada.
+struct Dialog {
+    request: Request,
+    receiver: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
+}
+
+impl Dialog {
+    fn open(request: Request, app: &App) -> Self {
+        // Nombre propuesto al guardar: el del archivo abierto o el del personaje.
+        let stem = app
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+            .or_else(|| app.model.as_ref().map(|m| m.name.clone()))
+            .unwrap_or_else(|| "personaje".into());
+        let stem = stem.trim_end_matches(".proyecto").to_string();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let repaint = app.egui_ctx.clone();
+        std::thread::spawn(move || {
+            let dialog = rfd::FileDialog::new();
+            let paths: Vec<std::path::PathBuf> = match request {
+                Request::Open => dialog.set_title("Abrir modelo o proyecto").add_filter("Modelos 3D y proyectos", &["glb", "gltf", "vrm"]).pick_file().into_iter().collect(),
+                Request::FromImage => dialog
+                    .set_title("Ilustraciones del personaje (puedes elegir varias: de frente, de espaldas…)")
+                    .add_filter("Imágenes", &["png", "jpg", "jpeg", "webp"])
+                    .pick_files()
+                    .unwrap_or_default(),
+                Request::FromMesh => dialog.set_title("Malla de IA de una pieza").add_filter("Modelos 3D", &["glb", "gltf"]).pick_file().into_iter().collect(),
+                Request::SaveProject => dialog
+                    .set_title("Guardar proyecto")
+                    .add_filter("Proyecto anime2waifu3d (GLB)", &["glb"])
+                    .set_file_name(format!("{stem}.proyecto.glb"))
+                    .save_file()
+                    .into_iter()
+                    .collect(),
+                Request::Export(format, _) => dialog
+                    .set_title("Exportar")
+                    .add_filter(format.name(), &[format.extension()])
+                    .set_file_name(format!("{stem}.{}", format.extension()))
+                    .save_file()
+                    .into_iter()
+                    .collect(),
+            };
+            let _ = sender.send(paths);
+            repaint.request_repaint();
+        });
+        Dialog { request, receiver }
+    }
+}
+
+fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selected: &mut Option<usize>, dialog: &mut Option<Dialog>) {
+    app.poll_job();
+    // Lo que haya elegido el usuario en el diálogo abierto.
+    if let Some(open) = dialog {
+        match open.receiver.try_recv() {
+            Ok(paths) => {
+                let request = open.request;
+                *dialog = None;
+                if let Some(path) = paths.first() {
+                    match request {
+                        Request::Open => app.open(path),
+                        Request::FromImage => app.start_from_images(paths.clone()),
+                        Request::FromMesh => app.start_from_ai_mesh(path.clone()),
+                        Request::SaveProject => app.save_project(path),
+                        Request::Export(format, only_visible) => app.export(path, format, only_visible),
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => *dialog = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+    let dialog_open = dialog.is_some();
     let raw_input = app.egui_state.take_egui_input(window);
     let egui_ctx = app.egui_ctx.clone();
-    let mut open_dialog = false;
+    let mut request = None;
     let mut frame_shot = None;
     let output = egui_ctx.run(raw_input, |ctx| {
-        let left = egui::SidePanel::left("vista").default_width(230.0).show(ctx, |ui| {
-            view_panel(ui, app, &mut open_dialog, &mut frame_shot);
+        // Los paneles que estén en su propia ventana no se dibujan aquí.
+        let left = (!app.detached[Panel::View.index()]).then(|| {
+            egui::SidePanel::left("vista").default_width(230.0).show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Con un diálogo abierto no se pueden pedir otros.
+                    ui.add_enabled_ui(!dialog_open, |ui| view_panel(ui, app, &mut request, &mut frame_shot));
+                });
+            })
         });
-        let right = egui::SidePanel::right("capas").default_width(260.0).show(ctx, |ui| {
-            layers_panel(ui, app, selected);
+        job_window(ctx, app);
+        let right = (!app.detached[Panel::Layers.index()]).then(|| {
+            egui::SidePanel::right("capas").default_width(260.0).show(ctx, |ui| {
+                layers_panel(ui, app, selected);
+            })
         });
         egui::TopBottomPanel::bottom("estado").show(ctx, |ui| ui.label(&app.status));
         let ppp = ctx.pixels_per_point();
-        *insets = (left.response.rect.width() * ppp, right.response.rect.width() * ppp);
+        *insets = (left.map_or(0.0, |l| l.response.rect.width() * ppp), right.map_or(0.0, |r| r.response.rect.width() * ppp));
     });
-    if open_dialog {
-        if let Some(path) = rfd::FileDialog::new().add_filter("Modelos 3D", &["glb", "gltf", "vrm"]).pick_file() {
-            app.open(&path);
-        }
+    if let (Some(request), None) = (request, dialog.as_ref()) {
+        *dialog = Some(Dialog::open(request, app));
     }
     let size = window.inner_size();
     app.camera.set_insets(insets.0, insets.1, size.width as f32, size.height as f32);
@@ -225,19 +481,96 @@ fn render_frame(app: &mut App, window: &Window, insets: &mut (f32, f32), selecte
     surface_texture.present();
 }
 
-fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_shot: &mut Option<Shot>) {
+/// Ventana del proceso: lo que va contando y, al terminar, sus imágenes (recorte y análisis).
+fn job_window(ctx: &egui::Context, app: &mut App) {
+    let mut open = app.show_job_window;
+    egui::Window::new("Proceso").open(&mut open).default_width(520.0).show(ctx, |ui| {
+        if let Some((title, seconds)) = app.job_running() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("{title} ({seconds:.0} s)"));
+            });
+        }
+        if !app.job_images.is_empty() {
+            ui.horizontal(|ui| {
+                for (name, texture) in &app.job_images {
+                    ui.vertical(|ui| {
+                        ui.label(name);
+                        let size = texture.size_vec2();
+                        let height = 320.0f32;
+                        ui.image((texture.id(), egui::vec2(size.x * height / size.y, height)));
+                    });
+                }
+            });
+        }
+        egui::ScrollArea::vertical().max_height(220.0).stick_to_bottom(true).show(ui, |ui| {
+            for line in &app.job_log {
+                ui.monospace(line);
+            }
+        });
+    });
+    app.show_job_window = open;
+}
+
+/// Botón para sacar el panel a su propia ventana, o para devolverlo a la principal.
+fn detach_button(ui: &mut egui::Ui, app: &mut App, panel: Panel) {
+    let detached = app.detached[panel.index()];
+    let (label, hint) = if detached {
+        ("↙ Volver a la ventana principal", "También vuelve al cerrar esta ventana")
+    } else {
+        ("↗ Sacar a otra ventana", "El panel pasa a una ventana propia que puedes mover fuera de la aplicación")
+    };
+    if ui.small_button(label).on_hover_text(hint).clicked() {
+        app.panel_requests.push((panel, !detached));
+    }
+}
+
+fn view_panel(ui: &mut egui::Ui, app: &mut App, request: &mut Option<Request>, frame_shot: &mut Option<Shot>) {
+    detach_button(ui, app, Panel::View);
+    ui.heading("Crear");
+    match app.job_running() {
+        Some((title, seconds)) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("{title} ({seconds:.0} s)"));
+            });
+            if ui.button("Ver el proceso").clicked() {
+                app.show_job_window = true;
+            }
+        }
+        None => {
+            if ui
+                .button("Personaje desde imagen…")
+                .on_hover_text("Una o varias ilustraciones del mismo personaje: la mejor de cuerpo entero y de frente da la figura y el frente; una de espaldas, si la hay, la espalda. Unos 25 s por imagen.")
+                .clicked()
+            {
+                *request = Some(Request::FromImage);
+            }
+            if ui
+                .button("Preparar malla de IA…")
+                .on_hover_text("Una malla de una pieza (como las de SupaVoxel): capas, esqueleto, pelo, falda y cara. Tarda unos minutos.")
+                .clicked()
+            {
+                *request = Some(Request::FromMesh);
+            }
+            if !app.job_log.is_empty() && ui.button("Ver el último proceso").clicked() {
+                app.show_job_window = true;
+            }
+        }
+    }
+    ui.separator();
     if ui.button("Abrir modelo o proyecto…").clicked() {
-        *open_dialog = true;
+        *request = Some(Request::Open);
     }
     if app.model.is_some() {
         if ui.button("Guardar proyecto… (Ctrl+S)").clicked() {
-            save_project_dialog(app);
+            *request = Some(Request::SaveProject);
         }
         // Ctrl+S guarda sobre el proyecto abierto; si lo abierto no es un proyecto, pregunta.
         if ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
             match app.path.clone().filter(|p| p.to_string_lossy().ends_with(".proyecto.glb")) {
                 Some(path) => app.save_project(&path),
-                None => save_project_dialog(app),
+                None => *request = Some(Request::SaveProject),
             }
         }
         ui.menu_button("Exportar…", |ui| {
@@ -247,15 +580,7 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
             for format in project::Format::ALL {
                 if ui.button(format.name()).clicked() {
                     ui.close_menu();
-                    let stem = app.path.as_ref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("modelo").to_string();
-                    let stem = stem.trim_end_matches(".proyecto").to_string();
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter(format.name(), &[format.extension()])
-                        .set_file_name(format!("{stem}.{}", format.extension()))
-                        .save_file()
-                    {
-                        app.export(&path, format, only_visible);
-                    }
+                    *request = Some(Request::Export(format, only_visible));
                 }
             }
         });
@@ -350,22 +675,10 @@ fn view_panel(ui: &mut egui::Ui, app: &mut App, open_dialog: &mut bool, frame_sh
     }
 }
 
-/// Diálogo para guardar el proyecto (un GLB con el estado de la app).
-fn save_project_dialog(app: &mut App) {
-    let name = app
-        .path
-        .as_ref()
-        .and_then(|p| p.file_stem())
-        .and_then(|s| s.to_str())
-        .map_or("proyecto".to_string(), |s| if s.ends_with(".proyecto") { s.to_string() } else { format!("{s}.proyecto") });
-    if let Some(path) = rfd::FileDialog::new().add_filter("Proyecto anime2waifu3d (GLB)", &["glb"]).set_file_name(format!("{name}.glb")).save_file() {
-        app.save_project(&path);
-    }
-}
-
 /// Paleta de capas mínima: ojo, nombre, Alt+clic en el ojo para ver solo esa capa, y opacidad de la
 /// capa seleccionada. La paleta completa al estilo Photoshop llegará con la interfaz.
 fn layers_panel(ui: &mut egui::Ui, app: &mut App, selected: &mut Option<usize>) {
+    detach_button(ui, app, Panel::Layers);
     ui.heading("Capas");
     let Some(model) = &mut app.model else {
         ui.label("Sin modelo");
@@ -532,6 +845,144 @@ fn print_face(report: anyhow::Result<face::Report>) {
     }
 }
 
+/// `anime2waifu3d recortar IMAGEN SALIDA.png [--modelo birefnet.onnx]`: quita el fondo de una
+/// imagen (ruta desde imagen, paso 1).
+fn run_cutout(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut model = cutout::default_model();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--modelo" {
+            model = it.next().ok_or_else(|| anyhow::anyhow!("falta la ruta del modelo"))?.into();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: recortar IMAGEN SALIDA.png [--modelo birefnet.onnx]") };
+    let start = std::time::Instant::now();
+    let image = image::open(input)?.to_rgba8();
+    let cut = cutout::cut(&image, &model)?;
+    cut.save(output)?;
+    println!("{}x{} -> {output} ({}x{}) en {:.1} s", image.width(), image.height(), cut.width(), cut.height(), start.elapsed().as_secs_f32());
+    Ok(())
+}
+
+/// `anime2waifu3d profundidad IMAGEN_RECORTADA SALIDA.png [--modelo depth.onnx]`: profundidad
+/// del personaje (ruta desde imagen, paso 2), en grises de 16 bits; blanco es lo más cercano.
+fn run_depth(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut model = depth::default_model();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--modelo" {
+            model = it.next().ok_or_else(|| anyhow::anyhow!("falta la ruta del modelo"))?.into();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: profundidad IMAGEN_RECORTADA SALIDA.png [--modelo depth.onnx]") };
+    let start = std::time::Instant::now();
+    let image = image::open(input)?.to_rgba8();
+    let map = depth::depth(&image, &model)?;
+    depth::save(&map, std::path::Path::new(output))?;
+    println!("{input} -> {output} en {:.1} s", start.elapsed().as_secs_f32());
+    Ok(())
+}
+
+/// `anime2waifu3d analizar IMAGEN_RECORTADA SALIDA.json [--imagen comprobacion.png]`: partes y
+/// puntos clave de la imagen (ruta desde imagen, paso 2b).
+fn run_analyze(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut debug = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--imagen" {
+            debug = it.next().cloned();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: analizar IMAGEN_RECORTADA SALIDA.json [--imagen comprobacion.png]") };
+    let image = image::open(input)?.to_rgba8();
+    let analysis = analyze::analyze(&image)?;
+    std::fs::write(output, serde_json::to_string_pretty(&analysis)?)?;
+    if let Some(path) = debug {
+        analyze::debug_image(&image, &analysis).save(path)?;
+    }
+    let k = &analysis.keypoints;
+    if k.face_width > 0.0 {
+        println!(
+            "{input}: {:.1} cabezas, hombros {:.2}, cintura {:.2}, cadera {:.2} (anchos entre el de la cara)",
+            k.heads_tall,
+            k.shoulder_width / k.face_width,
+            k.waist_width / k.face_width,
+            k.hip_width / k.face_width
+        );
+    } else {
+        println!("{input}: sin cara reconocible (piel no distinguible por color): solo la silueta, alturas supuestas");
+    }
+    Ok(())
+}
+
+/// `anime2waifu3d imagen IMAGEN [IMAGEN…] SALIDA.glb [--base Base_Female.vrm]`: de una o varias
+/// ilustraciones del mismo personaje a un
+/// modelo 3D (prototipo de la ruta desde imagen): quita el fondo, analiza partes y proporciones,
+/// ajusta el cuerpo base y le pinta la imagen. Deja al lado el recorte (`_recorte.png`) y la
+/// imagen del análisis (`_analisis.png`).
+fn run_image(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut base = pipeline::default_base();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--base" {
+            base = it.next().ok_or_else(|| anyhow::anyhow!("falta el modelo base"))?.into();
+        } else {
+            files.push(arg.clone());
+        }
+    }
+    anyhow::ensure!(files.len() >= 2, "uso: imagen IMAGEN [IMAGEN…] SALIDA.glb [--base Base_Female.vrm]");
+    let output = std::path::Path::new(files.last().unwrap());
+    let inputs: Vec<std::path::PathBuf> = files[..files.len() - 1].iter().map(std::path::PathBuf::from).collect();
+    let stem = output.with_extension("");
+    let start = std::time::Instant::now();
+    let result = pipeline::from_images(&inputs, &base, &|line| println!("{line}"))?;
+    for (i, (_, cutout, analysis)) in result.images.iter().enumerate() {
+        let suffix = if result.images.len() > 1 { format!("_{}", i + 1) } else { String::new() };
+        cutout.save(format!("{}_recorte{suffix}.png", stem.display()))?;
+        analysis.save(format!("{}_analisis{suffix}.png", stem.display()))?;
+    }
+    export_glb::write(&result.model, output)?;
+    println!("-> {} en {:.1} s", output.display(), start.elapsed().as_secs_f32());
+    Ok(())
+}
+
+/// `anime2waifu3d preparar MALLA SALIDA.glb [--base Base_Female.vrm] [--prop "capas=hueso"]`: de
+/// una malla de IA de una pieza a un personaje por capas y riggeado (lo mismo que hacen
+/// `segment`, `rig`, `hair` y `face` seguidos).
+fn run_prepare(args: &[String]) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    let mut base = pipeline::default_base();
+    let mut props = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--base" => base = it.next().ok_or_else(|| anyhow::anyhow!("falta el modelo base"))?.into(),
+            "--prop" => {
+                let value = it.next().ok_or_else(|| anyhow::anyhow!("falta el valor de --prop"))?;
+                let (layers, bone) = value.rsplit_once('=').ok_or_else(|| anyhow::anyhow!("--prop es \"capa,capa=hueso\""))?;
+                props.push(rig::Prop { layers: layers.split(',').map(|s| s.trim().to_string()).collect(), bone: bone.trim().to_string() });
+            }
+            _ => files.push(arg.clone()),
+        }
+    }
+    let [input, output] = files.as_slice() else { anyhow::bail!("uso: preparar MALLA SALIDA.glb [--base Base_Female.vrm] [--prop \"capas=hueso\"]") };
+    let start = std::time::Instant::now();
+    let model = pipeline::from_ai_mesh(std::path::Path::new(input), &base, &props, &|line| println!("{line}"))?;
+    export_glb::write(&model, std::path::Path::new(output))?;
+    println!("-> {output} en {:.1} s", start.elapsed().as_secs_f32());
+    Ok(())
+}
+
 /// `anime2waifu3d export ENTRADA SALIDA.(glb|vrm|obj|fbx) [--solo-modelo] [--visibles]`: exporta
 /// un modelo o proyecto. `--solo-modelo` hace el GLB sin esqueleto; `--visibles` deja fuera las
 /// capas ocultas en el proyecto.
@@ -609,6 +1060,41 @@ fn main() {
         }
         return;
     }
+    if args.first().map(String::as_str) == Some("recortar") {
+        if let Err(error) = run_cutout(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("profundidad") {
+        if let Err(error) = run_depth(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("analizar") {
+        if let Err(error) = run_analyze(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("preparar") {
+        if let Err(error) = run_prepare(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("imagen") {
+        if let Err(error) = run_image(&args[1..]) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().map(String::as_str) == Some("export") {
         if let Err(error) = run_export(&args[1..]) {
             eprintln!("{error:#}");
@@ -660,6 +1146,8 @@ fn main() {
         insets: (0.0, 0.0),
         selected_layer: None,
         last_frame: std::time::Instant::now(),
+        dialog: None,
+        panels: Vec::new(),
     };
     event_loop.run_app(&mut handler).expect("fallo en el bucle de eventos");
 }

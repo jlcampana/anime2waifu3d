@@ -42,15 +42,43 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 - [ ] Prueba a guardar un proyecto (Ctrl+S), cerrarlo y volver a abrirlo. También a exportar con "Exportar…" y abrir el resultado en Blender.
 - [ ] Dime lo que veas mal o raro, con el modelo, la pose o la animación, y la zona. Si puedes, añade una captura.
 
+### Ruta desde imagen (rama `ruta-imagen`)
+
+- [ ] Prueba a crear un personaje desde la interfaz:
+  ```bash
+  git checkout ruta-imagen
+  cargo run --release
+  ```
+  - Los diálogos ya no dan «no responde» (comprobado por ti el 2026-11-19).
+  - En el panel izquierdo, «Personaje desde imagen…»: eliges una o **varias ilustraciones del mismo personaje** (unos 25 s cada una) y el personaje aparece en el visor.
+    - La mejor de frente y de cuerpo entero da la figura y el frente.
+    - Las proporciones son la media de todas las de frente.
+    - Una de espaldas pinta la espalda y el pelo de detrás. La ventana «Proceso» enseña el avance, el recorte y el análisis; si sale raro, ahí se ve por qué.
+  - «Preparar malla de IA…» hace lo mismo con una malla de una pieza (SupaVoxel): unos 2 minutos.
+  - Después lo guardas con «Guardar proyecto…» o lo exportas con «Exportar…».
+  - Los paneles «Vista» y «Capas» tienen «↗ Sacar a otra ventana»: pasan a una ventana propia que puedes llevar fuera de la aplicación. Vuelven con «↙ Volver…» o cerrando esa ventana. Comprobado por ti el 2026-11-19: sale y vuelve bien.
+  - Por línea de comandos sigue funcionando todo (`imagen`, `preparar`, `export`…).
+
+  Mejor resultado con:
+  - un personaje de cuerpo entero, de pie y de frente;
+  - con los brazos algo separados del cuerpo;
+  - con fondo sencillo y en color;
+  - **no sexual**.
+
+  El ejemplo es `assets/resultados/imagen_a_3d.png` (Nagatoro).
+- [ ] **Imágenes de prueba:** necesito varias ilustraciones de cuerpo entero así, para ajustar el proceso, y si puede ser **un mismo personaje de frente y de espaldas** (hojas de personaje o *turnarounds*), para probar la espalda. Ahora solo tengo una (Nagatoro 1).
+  - Las de `assets/prueba` (Marin) no las he usado: son sexuales y el personaje es menor en la obra.
+  - Valen personajes adultos o imágenes no sexuales, por ejemplo hojas de personaje (*character sheets*) o imágenes oficiales de cuerpo entero.
+
 ## 2. Decisiones que necesito
 
 - [x] **Siguiente bloque grande.** Lo que has decidido:
   - [x] **Falda y abrigo con física de tela:** hecho.
   - [x] **Cara animable:** elegiste geometría de párpados. Hecho: parpadeo, guiño, ojos felices (^^) y boca con vocales.
   - [x] **Formato de proyecto:** hecho. "Guardar proyecto…" (Ctrl+S) y "Exportar…" a GLB, VRM, GLB solo modelo, OBJ y FBX.
-  - [ ] **Ruta desde imagen:** imagen de anime → modelo, con quitar el fondo y ajustar Base_Female a la silueta. Pendiente: dime cuándo.
+  - [x] **Ruta desde imagen:** empezada el 2026-11-18, en la rama `ruta-imagen`. Paso 1 (quitar el fondo) hecho, con ONNX Runtime de Fedora y BiRefNet fp32, que elegiste tú.
 - [x] **VRM Add-on de Blender.** Me diste permiso. Está instalado en la carpeta aislada (versión 4.10.5) y el VRM exportado se ha validado con él. Si quieres verlo tú, instálalo en tu Blender desde Edit > Preferences > Get Extensions (busca "VRM").
-- [ ] **Unir la rama a `main`.** Todo está en la rama `visor-y-segmentacion` (GitHub `jlcampana/anime2waifu3d`). ¿Abro un PR y lo unes cuando lo hayas probado?
+- [x] **Unir la rama a `main`:** PR #1 unido el 2026-11-18.
 - [ ] **El modelo de la motosierra:**
   - necesita marcar la motosierra a mano (`--prop`), porque la segmentación confunde el metal con pelo;
   - tiene la cabeza girada y se queda sin párpados ni boca;
@@ -73,9 +101,16 @@ Lo que tienes que hacer tú: decisiones, pruebas en tu PC, material que solo tú
 
 - [ ] Los modelos SupaVoxel de Sketchfab son CC-BY: si alguno se distribuye o se usa en material público, hay que dar crédito al autor. De momento solo están en `assets/`, que no se sube a git.
 - [ ] Los modelos de DOA, los ripeados de DeviantArt, Mai Shiranui y los MMD de HoYoverse son **solo para pruebas locales**: nunca se suben ni se incluyen en la app. Confírmalo si tu idea es distinta.
-- [ ] Base_Female y HairSample_Female de VRoid son CC0 (según sus metadatos VRM). Conviene que lo confirmes en la página oficial de VRoid antes de distribuir algo que los incluya.
+- [x] Base_Female y HairSample_Female de VRoid son CC0 (según sus metadatos VRM). Conviene que lo confirmes en la página oficial de VRoid antes de distribuir algo que los incluya.
 
 ## 5. Al final del proyecto
 
+- [ ] **Script de instalación (hecho, solo Fedora):** `scripts/instalar.sh` instala con dnf lo necesario y compila:
+  - Rust;
+  - Vulkan;
+  - ONNX Runtime;
+  - los modelos y Base_Female.
+
+  Opciones: `--con-blender` (FBX y reducir mallas de IA densas), `--sin-modelos` y `--simular`. Lo he comprobado en modo simulación.
 - [ ] Revisar la documentación de la nueva interfaz que escribiré en `/home/pandi/Projects/doa.player`, para adaptarla allí. Es el último paso.
 - [ ] Decidir si quieres el modo low poly (estilo del vídeo de Grok de Nagatoro) como opción del producto final.

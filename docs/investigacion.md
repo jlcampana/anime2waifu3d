@@ -260,6 +260,153 @@ Implementado en `src/project.rs`.
   - Exportar las animaciones cuando haya línea de tiempo.
   - El VRM no está validado con un visor VRM (falta el VRM Add-on).
 
+## 6e. Ruta desde imagen, paso 1: quitar el fondo (2026-11-18)
+
+Implementado en `src/cutout.rs`, con el subcomando `anime2waifu3d recortar IMAGEN SALIDA.png [--modelo …]`.
+
+- **Modelo:** BiRefNet ToonOut en ONNX, fp32 (974 MB, MIT), en `assets/modelos/birefnet-toonout.onnx`. Elección del usuario frente a fp16 e isnet-anime.
+- **Runtime:** ONNX Runtime del sistema (paquete `onnxruntime` 1.26 de Fedora, elección del usuario), cargado al usarlo con el crate `ort` 2.0.0-rc.15 (`load-dynamic`, API 26). Sin él, el resto de la app funciona. `ORT_DYLIB_PATH` permite otra biblioteca, por ejemplo en Ubuntu.
+- **Proceso:**
+  - Entrada: la imagen a 1024×1024, RGB normalizado con ImageNet.
+  - Salida: máscara 0..1, que se escala al tamaño original y pasa al canal alfa.
+  - Se queda la pieza más grande (el personaje) y las de al menos el 10 % de su tamaño. Así desaparecen las letras sueltas de una portada.
+  - El resultado se recorta al personaje con un margen del 3 %.
+- **Tiempo:** unos 22 s por imagen en la CPU (4 núcleos).
+- **Resultado** con las cuatro imágenes de Nagatoro: limpio en ilustraciones y en blanco y negro. En las portadas quedan las letras que tocan al personaje.
+
+## 6f. Ruta desde imagen, paso 2a: profundidad (2026-11-18)
+
+Implementado en `src/depth.rs`, con el subcomando `anime2waifu3d profundidad IMAGEN_RECORTADA SALIDA.png`. ONNX Runtime se comparte con el recorte en `src/onnx.rs`.
+
+- **Modelo:** Depth Anything V2 small en ONNX, fp32 (99 MB, Apache-2.0, de `onnx-community`), en `assets/modelos/`. El usuario aprobó la descarga.
+- **Entrada:** la imagen con el lado largo a 518 px y los dos lados en múltiplos de 14, normalizada con ImageNet.
+- **Salida:** profundidad relativa inversa (más es más cerca). Se pasa a 0..1 antes de escalar al tamaño de la imagen, porque `resize` recorta los `f32` a ese rango. Después se normaliza dentro del personaje con los percentiles 1 y 99. Fuera del personaje vale 0.
+- Se guarda en grises de 16 bits; blanco es lo más cercano.
+- **Tiempo:** menos de 1 s por imagen en la CPU.
+- **Resultado** con las cuatro imágenes de Nagatoro: coherente. La cabeza y las manos que se acercan a la cámara quedan delante, y la espalda y la falda en sus planos.
+
+## 6g. Ruta desde imagen, paso 2b: partes y puntos clave (2026-11-18)
+
+Implementado en `src/analyze.rs`, con el subcomando `anime2waifu3d analizar IMAGEN_RECORTADA SALIDA.json [--imagen comprobacion.png]`. No necesita modelos.
+
+- **Partes.** k-means (8 grupos) en Lab sobre el personaje.
+  - **Piel:** grupos con tono de piel anime (L 35–97, croma 5–55, tono 15–90°).
+  - **Pelo:** el grupo más frecuente en el 8 % de arriba que no es piel, más los grupos a menos de ΔE 22, crecido por conexión desde arriba.
+  - **Calzado:** lo que no es piel en el último 6 %.
+  - **Ropa:** el resto.
+- **Puntos clave**, sobre la silueta sin pelo, en el tramo continuo que contiene el centro:
+  - **Barbilla:** donde la mancha de piel de la cara se estrecha a menos del 60 % de su ancho máximo (la piel del cuello y el escote va pegada).
+  - **Hombros:** lo más ancho en las 0.7 cabezas de debajo.
+  - **Entrepierna:** donde el centro deja de ser cuerpo.
+  - **Cintura:** lo más estrecho entre hombros y entrepierna.
+  - **Cadera:** lo más ancho entre cintura y entrepierna.
+  - **Rodillas:** a mitad de pierna.
+  - El JSON guarda los puntos y las proporciones (cabezas de alto, anchos relativos a la cara).
+- **Resultado** con Nagatoro:
+  - Cuerpo entero: 6.4 cabezas, coherente.
+  - Las portadas no son de cuerpo entero, así que su número de cabezas no vale.
+  - En blanco y negro no se distingue la piel: solo silueta.
+  - La primera versión confundía la falda azul marino con el pelo negro (margen ΔE 28); con 22 ya no.
+- **Pendiente:**
+  - Corregir partes y puntos a mano en la app.
+  - Brazos y piernas por separado.
+  - Ojos y boca en 2D.
+
+## 6h. Ruta desde imagen, paso 3: cuerpo ajustado y textura proyectada (2026-11-18)
+
+Implementado en `src/fit.rs`, con el comando completo `anime2waifu3d imagen IMAGEN SALIDA.glb [--base …]`: quita el fondo, analiza, ajusta y pinta. Deja al lado `_recorte.png` y `_analisis.png`. Tarda unos 25 s; casi todo es BiRefNet.
+
+- **Ajuste de Base_Female** con los puntos clave:
+  - Escala: metros por píxel, sacados de la altura.
+  - Vertical por tramos: pies, cintura, hombros, barbilla.
+  - La cabeza se escala entera desde la barbilla.
+  - El tronco se ensancha con los anchos de hombros y cintura, interpolados por alturas.
+  - Brazos y piernas se desplazan con sus articulaciones, y los brazos se alargan con el tronco.
+  - Los huesos siguen la misma regla, así que el modelo sigue riggeado: poses, física y exportación funcionan.
+- **Textura:** proyección frontal con los brazos caídos. Cada vértice toma la UV del píxel que tiene delante, y lo transparente se rellena con el color opaco más cercano.
+- **Resultado con Nagatoro** (cuerpo entero): se reconoce la cara, la camisa, la falda, la piel y los zapatos.
+  - Hay manchas donde la imagen tiene pelo o la otra mano delante.
+  - Los brazos de la imagen no están en la pose de proyección.
+  - La espalda repite el frente.
+  - No hay pelo con volumen.
+- **Siguiente:**
+  - Pelo con volumen desde la máscara de pelo, con cadenas.
+  - Brazos de la pose de la imagen.
+  - Dorso coherente: pelo y ropa por detrás, sin la cara.
+  - Falda como cono con física.
+  - Usar la profundidad.
+
+## 6i. Ruta desde imagen, pasos 4 y 5: pelo, falda, brazos, piernas y cara (2026-11-19)
+
+El comando `imagen` hace ahora seis pasos: recorte, análisis, ajuste, pintura, cara, y pelo y falda.
+
+- **Brazos y piernas** (`fit::project`).
+  - Antes de pintar se prueban ángulos por brazo (de 80° a 5° bajo la horizontal) y por pierna (abiertas de 0° a 15°).
+  - Gana el que pone más vértices sobre piel o ropa de la imagen.
+  - El modelo queda en T; solo cambia la proyección.
+- **Texturas.**
+  - Cuerpo: la imagen con el pelo de debajo de la barbilla borrado.
+  - Pelo: la imagen entera.
+  - Lo de fuera de la silueta se rellena desde el interior, ignorando unos píxeles de borde: la línea negra del dibujo pintaba de negro lo que el cuerpo 3D tiene fuera de la silueta, como las piernas más anchas.
+- **Pelo** (`src/dress.rs`).
+  - **Casquete:** el cráneo donde la imagen es pelo, más la parte de atrás y la nuca, 5 % de cabeza hacia fuera.
+  - **Melena:** una rejilla sobre la máscara de pelo por debajo de los ojos, con dos láminas y paredes. Va delante del cuerpo donde lo tapa, y detrás del plano de la cabeza y más gruesa donde cae por los lados.
+  - **Cortina por la espalda:** desde la barbilla. Si el pelo llega a los hombros, se supone que baja al menos una cabeza más.
+  - Después `hair::rig_hair` le pone mechones, cadenas y física.
+- **Falda:** un cono de anillos desde donde la silueta se ensancha bajo la cintura hasta donde la ropa deja de ocupar el 85 % de la fila.
+  - Cada anillo tiene el ancho de la silueta sin meterse en las piernas.
+  - Su textura se reparte sobre el ancho de la falda dibujada en esa fila.
+  - Después `hair::rig_skirt` le pone cadenas.
+- **Cara:** la capa Face de Base_Female pasa a "piel cara" y se aplica `face::rig_face`. Para estas caras la búsqueda de ojos tiene un segundo intento:
+  - sin contar lo del color del pelo, porque las pestañas se pegan al flequillo pintado;
+  - admitiendo cabezas inclinadas;
+  - rechazando ojos de menos del 15 % de su separación.
+  - En los tres modelos de SupaVoxel sigue saliendo lo mismo.
+- **Resultado con Nagatoro de cuerpo entero:**
+  - Piernas, zapatos blancos y espalda limpios.
+  - Melena por detrás, que se mueve con el viento.
+  - Falda azul con volumen.
+  - Párpados y boca.
+  - La cortina de la espalda ya no es un rectángulo: por debajo de los hombros no es más ancha que ellos, el bajo es redondeado (más largo en el centro) y las puntas son desiguales, como mechones.
+  - Pendiente: el brazo en jarra no se reproduce, y la melena de los lados es poca porque el mechón fino se clasifica mal.
+
+## 6j. Todo desde la interfaz (2026-11-19)
+
+Petición del usuario: crear personajes desde la interfaz gráfica, además de por línea de comandos. Solo Fedora.
+
+- **Rutas completas** en `src/pipeline.rs`: `from_image` y `from_ai_mesh`. Las usan la interfaz y los comandos `imagen` y `preparar`, y cuentan su avance con un callback.
+  - `from_ai_mesh` reduce con Blender las mallas de más de 160 000 triángulos a 80 000 (`tools/blender/decimate.py`), si Blender está instalado.
+  - Probado con la malla original de la de pelo turquesa (647 166 triángulos): 106 s hasta el personaje con capas, rig, mechones, ojos y boca.
+- **Interfaz.** En el panel izquierdo, «Crear» tiene «Personaje desde imagen…» y «Preparar malla de IA…».
+  - El proceso va en un hilo aparte y la ventana sigue funcionando.
+  - La barra de estado y la ventana «Proceso» enseñan el avance. Al terminar, la ventana muestra el recorte y el análisis, y el personaje se abre en el visor sin archivo: se guarda con «Guardar proyecto…» o «Exportar…».
+- Los recursos (`assets/`, `tools/`) se buscan en la carpeta actual o en la del proyecto, así que la app se puede lanzar desde cualquier sitio.
+- `--desde-imagen IMAGEN` en las capturas lanza el mismo proceso que el botón y espera. Comprobado lanzando desde `/tmp`.
+- `scripts/instalar.sh`: solo Fedora.
+
+## 6k. Varias imágenes del mismo personaje y diálogos sin bloquear (2026-11-19)
+
+- **Diálogos de archivo.** Abrir, imagen, malla, guardar proyecto y exportar se abren en un hilo aparte. Si el hilo de la ventana esperaba al portal de escritorio, GNOME mostraba «no responde» cuando el usuario tardaba en elegir. Mientras hay un diálogo abierto, el panel no admite pedir otro.
+- **Varias imágenes** («Personaje desde imagen…» admite selección múltiple; `imagen IMG1 IMG2 … SALIDA.glb`).
+  - Cada una se recorta y se analiza.
+  - **Principal:** la de mejor puntuación (de frente con cara, de cuerpo entero, piel distinguible, cerca de 6,5 cabezas). Da la figura, el frente, el pelo y la falda.
+  - **Proporciones:** la media de todas las de frente y de cuerpo entero, con alturas y anchos relativos al alto de cada imagen.
+  - **Espalda:** una sin cara, de cuerpo entero y con piel visible pinta todo lo que mira hacia atrás (`fit::project_back`), reflejada en x. También el casquete, la melena y la cortina de pelo de detrás, en vez del color plano.
+  - La ventana «Proceso» enseña cada imagen con su papel: frente, espalda, proporciones o no usada.
+  - `A2W_ESPALDA=n` fuerza la imagen n como espalda (depuración).
+- ONNX Runtime solo admite un entorno por proceso: se crea una vez y se reutiliza. Antes fallaba la segunda imagen, o el segundo personaje sin cerrar la app.
+- Probado con tres imágenes de Nagatoro: elige la de cuerpo entero y descarta la portada y la de blanco y negro. La espalda, probada a la fuerza con la misma imagen: la proyección funciona. **Falta una imagen de espaldas real.**
+
+## 6l. Paneles en su propia ventana (2026-11-19)
+
+Petición del usuario: que los paneles puedan salir del marco de la aplicación.
+
+- «Vista» (izquierda) y «Capas» (derecha) tienen «↗ Sacar a otra ventana». El panel pasa a una ventana propia del sistema, que se puede mover fuera de la aplicación o a otro monitor.
+- Vuelve con «↙ Volver a la ventana principal» o al cerrar su ventana.
+- Cada ventana de panel tiene su superficie wgpu, con la misma instancia, adaptador y dispositivo que la principal, y su propio contexto de egui con el mismo estilo. Dibuja la misma función de panel sobre la `App` común.
+- La ventana principal deja de reservar el hueco del panel que está fuera.
+- No se usa el sistema de *viewports* de egui, porque nuestra integración winit+wgpu no lo implementa. Son ventanas winit independientes.
+
 ## 6b. Muelles de pecho (bouncing), de doa.player
 
 doa.player tiene medidos y verificados contra el juego tres modelos, de menos a más rico:
